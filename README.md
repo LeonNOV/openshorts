@@ -442,14 +442,21 @@ lives in [`examples/n8n/`](examples/n8n/).
 | `LLM_BASE_URL` | OpenAI-compatible server for the moment picker (Ollama, vLLM, LM Studio...). Set it and the Gemini key becomes optional |
 | `LLM_MODEL` | Model name on that server (default `llama3.1:8b`) |
 | `LLM_API_KEY` | Bearer token for that server, if it checks one |
-| `LLM_SCORE_BATCH` | Transcript windows per scoring call (default 3 local, 8 Gemini) |
+| `LLM_SCORE_BATCH` | Transcript windows per scoring call (default 3 local, 8 Gemini/DeepSeek) |
+| `DEEPSEEK_API_KEY` | DeepSeek — the hosted alternative to Gemini for the text stages. Set it (or `LLM_PROVIDER=deepseek`) and the text work runs on DeepSeek |
+| `DEEPSEEK_MODEL` | Model name on DeepSeek (default `deepseek-v4-flash`) |
+| `LLM_PROVIDER` | Force a provider: `gemini`, `deepseek` or `openai` (a local compatible server) |
+| `TTS_PROVIDER` | Force a voice provider: `elevenlabs` (default) or `fish_audio` |
+| `FISH_AUDIO_MODEL` | Fish Audio model for the voiceover (default `s2.1-pro`) |
 
 **Client-side (encrypted in localStorage):**
 | Key | Description |
 |-----|------------|
 | `GEMINI_API_KEY` | Google Gemini — required unless `LLM_BASE_URL` is set (then only for layout picking and silent videos) |
+| `DEEPSEEK_API_KEY` | DeepSeek — the other half of the Gemini/DeepSeek choice. Replaces Gemini for the text stages; the frame-based stages still use Gemini when its key is set |
 | `FAL_KEY` | fal.ai — required for AI Shorts |
 | `ELEVENLABS_API_KEY` | ElevenLabs — required for voiceover/dubbing |
+| `FISH_AUDIO_API_KEY` | Fish Audio — the other half of the ElevenLabs/Fish Audio choice. Synthesizes the voiceover and dubs clips from the transcript |
 | `UPLOAD_POST_API_KEY` | Upload-Post — required, for social posting |
 
 ---

@@ -36,7 +36,7 @@ function formatDuration(clip) {
     return `${String(Math.floor(secs / 60)).padStart(2, '0')}:${String(secs % 60).padStart(2, '0')}`;
 }
 
-export default function ResultCard({ clip, index, jobId, durable, uploadPostKey, uploadUserId, geminiApiKey, elevenLabsKey, isManaged, onPlay, onPause, onBulkSubtitle, clipCount = 1, bulkProgress, initialState = null, onStateChange, connectedPlatforms = null, onConnectSocials, onEditClip = null, onReframeClip = null, onUpgrade = null }) {
+export default function ResultCard({ clip, index, jobId, durable, uploadPostKey, uploadUserId, geminiApiKey, elevenLabsKey, isManaged, ttsProvider = 'elevenlabs', fishAudioKey = '', fishAudioModel = 's2.1-pro', onPlay, onPause, onBulkSubtitle, clipCount = 1, bulkProgress, initialState = null, onStateChange, connectedPlatforms = null, onConnectSocials, onEditClip = null, onReframeClip = null, onUpgrade = null }) {
     const [showModal, setShowModal] = useState(false);
     // The "why" line is clamped to two lines so cards in a row stay level;
     // when it overflows, a hover (desktop) or tap (touch) shows the whole
@@ -604,18 +604,25 @@ export default function ResultCard({ clip, index, jobId, durable, uploadPostKey,
         setIsTranslating(true);
         setEditError(null);
         try {
-            const apiKey = elevenLabsKey;
+            // The voice provider is either/or: the chosen provider's key goes
+            // in its own header, and the backend dubs with that provider.
+            const isFish = ttsProvider === 'fish_audio';
+            const apiKey = isFish ? fishAudioKey : elevenLabsKey;
             console.log('[Translate] API Key available:', !!apiKey);
 
             if (!apiKey) {
-                throw new Error("ElevenLabs API Key is missing. Please set it in Settings.");
+                throw new Error(isFish
+                    ? "Fish Audio API Key is missing. Please set it in Settings."
+                    : "ElevenLabs API Key is missing. Please set it in Settings.");
             }
 
             const requestBody = {
                 job_id: jobId,
                 clip_index: index,
                 target_language: options.targetLanguage,
-                input_filename: serverVideoFile
+                input_filename: serverVideoFile,
+                tts_provider: ttsProvider,
+                tts_model: isFish ? fishAudioModel : undefined,
             };
             console.log('[Translate] Request body:', requestBody);
             console.log('[Translate] Sending request to /api/translate');
@@ -624,7 +631,9 @@ export default function ResultCard({ clip, index, jobId, durable, uploadPostKey,
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
-                    'X-ElevenLabs-Key': apiKey
+                    ...(isFish
+                        ? { 'X-Fish-Audio-Key': apiKey }
+                        : { 'X-ElevenLabs-Key': apiKey })
                 },
                 body: JSON.stringify(requestBody)
             });
@@ -1198,7 +1207,8 @@ export default function ResultCard({ clip, index, jobId, durable, uploadPostKey,
                 onTranslate={handleTranslate}
                 isProcessing={isTranslating}
                 videoUrl={currentVideoUrl}
-                hasApiKey={!!elevenLabsKey}
+                hasApiKey={!!(ttsProvider === 'fish_audio' ? fishAudioKey : elevenLabsKey)}
+                provider={ttsProvider}
             />
 
             {showWatermarkModal && (

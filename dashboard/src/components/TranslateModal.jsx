@@ -36,8 +36,9 @@ const LANGUAGES = {
     "en": "English",
 };
 
-export default function TranslateModal({ isOpen, onClose, onTranslate, isProcessing, videoUrl, hasApiKey }) {
+export default function TranslateModal({ isOpen, onClose, onTranslate, isProcessing, videoUrl, hasApiKey, provider = 'elevenlabs' }) {
     const [targetLanguage, setTargetLanguage] = useState('es');
+    const isFish = provider === 'fish_audio';
 
     if (!isOpen) return null;
 
@@ -86,13 +87,21 @@ export default function TranslateModal({ isOpen, onClose, onTranslate, isProcess
                 <div className="w-10 h-10 rounded-input bg-paper3 flex items-center justify-center shrink-0">
                     <Languages size={18} className="text-brass" />
                 </div>
-                <p className="text-xs text-muted">AI voice translation by ElevenLabs</p>
+                <p className="text-xs text-muted">
+                    {isFish
+                        ? 'AI voice translation by Fish Audio'
+                        : 'AI voice translation by ElevenLabs'}
+                </p>
             </div>
 
             {!hasApiKey && (
                 <div className="mb-4 flex items-start gap-2">
                     <span className="badge-warn shrink-0"><AlertCircle size={12} /> key missing</span>
-                    <p className="text-sm text-muted">Configure ElevenLabs API Key in Settings first.</p>
+                    <p className="text-sm text-muted">
+                        {isFish
+                            ? 'Configure Fish Audio API Key in Settings first.'
+                            : 'Configure ElevenLabs API Key in Settings first.'}
+                    </p>
                 </div>
             )}
 

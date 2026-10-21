@@ -40,11 +40,23 @@ function saveCache(url, analysis, webResearch, scripts) {
   } catch { /* localStorage full */ }
 }
 
-export default function SaaShortsTab({ geminiApiKey, elevenLabsKey, falKey, uploadPostKey, uploadUserId, managed = false }) {
+export default function SaaShortsTab({ geminiApiKey, elevenLabsKey, falKey, uploadPostKey, uploadUserId, managed = false, ttsProvider = 'elevenlabs', fishAudioKey = '', fishAudioModel = 's2.1-pro', onFishAudioModelChange, llmProvider = 'gemini', deepseekKey = '' }) {
   // Managed (hosted plan): Gemini (script) + Upload-Post run server-side via the
-  // bearer token — no BYOK Gemini key needed. fal.ai + ElevenLabs stay BYOK.
-  const geminiHeader = geminiApiKey ? { 'X-Gemini-Key': geminiApiKey } : {};
-  const needsGeminiKey = !geminiApiKey && !managed;
+  // bearer token — no BYOK Gemini key needed. fal.ai + the voice provider stay
+  // BYOK.
+  // The analysis and the scripts are text-only, so the selected LLM answers
+  // them: DeepSeek when it is picked, Gemini otherwise.
+  const llmHeader = llmProvider === 'deepseek'
+    ? (deepseekKey ? { 'X-DeepSeek-Key': deepseekKey } : {})
+    : (geminiApiKey ? { 'X-Gemini-Key': geminiApiKey } : {});
+  const needsLlmKey = llmProvider === 'deepseek'
+    ? (!deepseekKey && !managed)
+    : (!geminiApiKey && !managed);
+  // The key of the voice provider the user picked: only that one is sent.
+  const ttsKey = ttsProvider === 'fish_audio' ? fishAudioKey : elevenLabsKey;
+  const ttsHeader = ttsProvider === 'fish_audio'
+    ? { 'X-Fish-Audio-Key': fishAudioKey }
+    : { 'X-ElevenLabs-Key': elevenLabsKey };
   // Wizard state
   const [step, setStep] = useState(() => {
     const cache = loadCache();
@@ -72,6 +84,8 @@ export default function SaaShortsTab({ geminiApiKey, elevenLabsKey, falKey, uplo
   // Step 2: Configure
   const [shareToGallery, setShareToGallery] = useState(false);
   const [voices, setVoices] = useState([]);
+  const [voiceModels, setVoiceModels] = useState([]);
+  const [voiceHint, setVoiceHint] = useState('');
   const [selectedVoice, setSelectedVoice] = useState('21m00Tcm4TlvDq8ikWAM');
   const [actorDescription, setActorDescription] = useState('');
   const [editedNarration, setEditedNarration] = useState('');
@@ -120,13 +134,15 @@ export default function SaaShortsTab({ geminiApiKey, elevenLabsKey, falKey, uplo
       .finally(() => setLoadingGallery(false));
   }, []);
 
-  // Fetch voices on mount
+  // Fetch voices on mount, and again when the provider or its key changes.
   useEffect(() => {
-    if (elevenLabsKey) {
+    if (ttsKey) {
       fetchVoices();
+    } else {
+      setVoices([]);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [elevenLabsKey]);
+  }, [ttsProvider, ttsKey]);
 
   // Reset selected voice when actor gender changes
   useEffect(() => {
@@ -186,12 +202,19 @@ export default function SaaShortsTab({ geminiApiKey, elevenLabsKey, falKey, uplo
 
   const fetchVoices = async () => {
     try {
-      const res = await fetch(getApiUrl('/api/saasshorts/voices'), {
-        headers: { 'X-ElevenLabs-Key': elevenLabsKey },
-      });
+      // The voice provider is either/or: the chosen provider's key goes in
+      // its own header, and the backend answers with that provider's list.
+      const headers = ttsProvider === 'fish_audio'
+        ? { 'X-Fish-Audio-Key': fishAudioKey }
+        : { 'X-ElevenLabs-Key': elevenLabsKey };
+      const res = await fetch(
+        `${getApiUrl('/api/saasshorts/voices')}?provider=${encodeURIComponent(ttsProvider)}`,
+        { headers });
       if (res.ok) {
         const data = await res.json();
         setVoices(data.voices || []);
+        setVoiceModels(data.models || []);
+        setVoiceHint(data.detail || '');
       }
     } catch (e) {
       console.error('Voices fetch error:', e);
@@ -200,8 +223,10 @@ export default function SaaShortsTab({ geminiApiKey, elevenLabsKey, falKey, uplo
 
   const handleAnalyze = async () => {
     if (!url.trim() && !description.trim()) return;
-    if (needsGeminiKey) {
-      setAnalyzeError('Gemini API key required. Set it in Settings.');
+    if (needsLlmKey) {
+      setAnalyzeError(llmProvider === 'deepseek'
+        ? 'DeepSeek API key required. Set it in Settings.'
+        : 'Gemini API key required. Set it in Settings.');
       return;
     }
 
@@ -213,7 +238,7 @@ export default function SaaShortsTab({ geminiApiKey, elevenLabsKey, falKey, uplo
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          ...geminiHeader,
+          ...llmHeader,
         },
         body: JSON.stringify({
           url: url.trim() || undefined,
@@ -268,8 +293,10 @@ export default function SaaShortsTab({ geminiApiKey, elevenLabsKey, falKey, uplo
       alert('fal.ai API key required. Set it in Settings.');
       return;
     }
-    if (!elevenLabsKey) {
-      alert('ElevenLabs API key required. Set it in Settings.');
+    if (!ttsKey) {
+      alert(ttsProvider === 'fish_audio'
+        ? 'Fish Audio API key required. Set it in Settings.'
+        : 'ElevenLabs API key required. Set it in Settings.');
       return;
     }
 
@@ -293,7 +320,7 @@ export default function SaaShortsTab({ geminiApiKey, elevenLabsKey, falKey, uplo
         headers: {
           'Content-Type': 'application/json',
           'X-Fal-Key': falKey,
-          'X-ElevenLabs-Key': elevenLabsKey,
+          ...ttsHeader,
         },
         body: JSON.stringify({
           script: scriptToSend,
@@ -302,6 +329,8 @@ export default function SaaShortsTab({ geminiApiKey, elevenLabsKey, falKey, uplo
           selected_actor_url: selectedActor || undefined,
           video_mode: videoMode,
           share_to_gallery: shareToGallery,
+          tts_provider: ttsProvider,
+          tts_model: ttsProvider === 'fish_audio' ? fishAudioModel : undefined,
         }),
       });
 
@@ -340,7 +369,7 @@ export default function SaaShortsTab({ geminiApiKey, elevenLabsKey, falKey, uplo
         headers: {
           'Content-Type': 'application/json',
           'X-Fal-Key': falKey,
-          'X-ElevenLabs-Key': elevenLabsKey,
+          ...ttsHeader,
         },
         body: JSON.stringify({
           script: scriptToSend,
@@ -349,6 +378,8 @@ export default function SaaShortsTab({ geminiApiKey, elevenLabsKey, falKey, uplo
           retry_job_id: jobId,
           video_mode: videoMode,
           share_to_gallery: shareToGallery,
+          tts_provider: ttsProvider,
+          tts_model: ttsProvider === 'fish_audio' ? fishAudioModel : undefined,
         }),
       });
 
@@ -809,34 +840,28 @@ export default function SaaShortsTab({ geminiApiKey, elevenLabsKey, falKey, uplo
                 <label className="eyebrow block mb-2">
                   Voice {language === 'es' ? '(Spanish)' : '(English)'}
                 </label>
-                {(() => {
-                  // Filter voices by language/accent
-                  const filtered = voices.length > 0
-                    ? voices.filter((v) => {
-                        const gender = (v.labels?.gender || '').toLowerCase();
-                        // Only show voices that match the selected gender
-                        return gender === actorGender;
-                      })
-                      .sort((a, b) => {
-                        const aAccent = (a.labels?.accent || '').toLowerCase();
-                        const bAccent = (b.labels?.accent || '').toLowerCase();
-                        if (language === 'es') {
-                          // Spanish/latin accents first, then everything else
-                          const aScore = (aAccent.includes('spanish') || aAccent.includes('latin')) ? 0 : 1;
-                          const bScore = (bAccent.includes('spanish') || bAccent.includes('latin')) ? 0 : 1;
-                          return aScore - bScore;
-                        }
-                        // English: american/british first
-                        const aScore = (aAccent.includes('american') || aAccent.includes('british')) ? 0 : 1;
-                        const bScore = (bAccent.includes('american') || bAccent.includes('british')) ? 0 : 1;
-                        return aScore - bScore;
-                      })
-                    : [];
-
-                  if (filtered.length > 0) {
-                    return (
+                {ttsProvider === 'fish_audio' ? (
+                  /* Fish Audio has no catalogue of preset voices: the account's
+                     own clones are the voices, so the list is the library and
+                     the model is picked per generation. */
+                  <div className="space-y-3">
+                    {voiceModels.length > 0 && (
+                      <div>
+                        <label className="block text-sm text-muted mb-2">Model</label>
+                        <select
+                          value={fishAudioModel}
+                          onChange={(e) => onFishAudioModelChange && onFishAudioModelChange(e.target.value)}
+                          className="input-field appearance-none cursor-pointer"
+                        >
+                          {voiceModels.map((m) => (
+                            <option key={m.id} value={m.id}>{m.label} — {m.hint}</option>
+                          ))}
+                        </select>
+                      </div>
+                    )}
+                    {voices.length > 0 ? (
                       <div className="space-y-1.5 max-h-48 overflow-y-auto custom-scrollbar">
-                        {filtered.map((v) => (
+                        {voices.map((v) => (
                           <button
                             key={v.voice_id}
                             onClick={() => setSelectedVoice(v.voice_id)}
@@ -848,56 +873,116 @@ export default function SaaShortsTab({ geminiApiKey, elevenLabsKey, falKey, uplo
                           >
                             <div className="flex-1 min-w-0">
                               <div className={`text-sm truncate ${selectedVoice === v.voice_id ? 'text-ink' : 'text-ink2'}`}>{v.name}</div>
-                              <div className="readout mt-0.5">
-                                {v.labels?.accent || ''} {v.labels?.gender || ''} {v.category ? `· ${v.category}` : ''}
-                              </div>
+                              {v.description && (
+                                <div className="readout mt-0.5 truncate">{v.description}</div>
+                              )}
                             </div>
-                            {v.preview_url && (
-                              <button
-                                onClick={(e) => { e.stopPropagation(); new Audio(v.preview_url).play(); }}
-                                className="shrink-0 w-7 h-7 rounded-full bg-paper3 text-muted hover:text-brass flex items-center justify-center transition-colors"
-                                title="Preview voice"
-                              >
-                                <Volume2 size={12} />
-                              </button>
-                            )}
                             {selectedVoice === v.voice_id && <Check size={14} className="text-brass shrink-0" />}
                           </button>
                         ))}
                       </div>
-                    );
-                  }
+                    ) : (
+                      <div className="p-3 bg-warn/10 rounded-input text-sm text-warn flex items-start gap-2">
+                        <AlertCircle size={14} className="shrink-0 mt-0.5" />
+                        <span>
+                          {voiceHint || 'No Fish Audio voices found. Clone a voice at fish.audio, or use the public Voice Library.'}
+                        </span>
+                      </div>
+                    )}
+                  </div>
+                ) : (
+                  (() => {
+                    // Filter voices by language/accent
+                    const filtered = voices.length > 0
+                      ? voices.filter((v) => {
+                          const gender = (v.labels?.gender || '').toLowerCase();
+                          // Only show voices that match the selected gender
+                          return gender === actorGender;
+                        })
+                        .sort((a, b) => {
+                          const aAccent = (a.labels?.accent || '').toLowerCase();
+                          const bAccent = (b.labels?.accent || '').toLowerCase();
+                          if (language === 'es') {
+                            // Spanish/latin accents first, then everything else
+                            const aScore = (aAccent.includes('spanish') || aAccent.includes('latin')) ? 0 : 1;
+                            const bScore = (bAccent.includes('spanish') || bAccent.includes('latin')) ? 0 : 1;
+                            return aScore - bScore;
+                          }
+                          // English: american/british first
+                          const aScore = (aAccent.includes('american') || aAccent.includes('british')) ? 0 : 1;
+                          const bScore = (bAccent.includes('american') || bAccent.includes('british')) ? 0 : 1;
+                          return aScore - bScore;
+                        })
+                      : [];
 
-                  // Fallback defaults by gender + language
-                  const defaults = {
-                    'en-female': [
-                      { id: '21m00Tcm4TlvDq8ikWAM', name: 'Rachel (calm)' },
-                      { id: 'EXAVITQu4vr4xnSDxMaL', name: 'Bella (soft)' },
-                    ],
-                    'en-male': [
-                      { id: '29vD33N1CtxCmqQRPOHJ', name: 'Drew (confident)' },
-                      { id: 'TxGEqnHWrfWFTfGW9XjX', name: 'Josh (deep)' },
-                      { id: 'yoZ06aMxZJJ28mfd3POQ', name: 'Sam (raspy)' },
-                    ],
-                    'es-female': [
-                      { id: 'EXAVITQu4vr4xnSDxMaL', name: 'Bella (suave)' },
-                      { id: '21m00Tcm4TlvDq8ikWAM', name: 'Rachel (calmada)' },
-                    ],
-                    'es-male': [
-                      { id: 'ErXwobaYiN019PkySvjV', name: 'Antoni (cálido)' },
-                      { id: '29vD33N1CtxCmqQRPOHJ', name: 'Drew (confiado)' },
-                    ],
-                  };
-                  const key = `${language}-${actorGender}`;
-                  const opts = defaults[key] || defaults['en-female'];
-                  return (
-                    <select value={selectedVoice} onChange={(e) => setSelectedVoice(e.target.value)} className="input-field">
-                      {opts.map((o) => <option key={o.id} value={o.id}>{o.name}</option>)}
-                    </select>
-                  );
-                })()}
+                    if (filtered.length > 0) {
+                      return (
+                        <div className="space-y-1.5 max-h-48 overflow-y-auto custom-scrollbar">
+                          {filtered.map((v) => (
+                            <button
+                              key={v.voice_id}
+                              onClick={() => setSelectedVoice(v.voice_id)}
+                              className={`w-full flex items-center gap-3 p-2.5 rounded-input border text-left transition-colors duration-200 ${
+                                selectedVoice === v.voice_id
+                                  ? 'border-brass bg-paper3'
+                                  : 'border-rule bg-paper hover:bg-paper3'
+                              }`}
+                            >
+                              <div className="flex-1 min-w-0">
+                                <div className={`text-sm truncate ${selectedVoice === v.voice_id ? 'text-ink' : 'text-ink2'}`}>{v.name}</div>
+                                <div className="readout mt-0.5">
+                                  {v.labels?.accent || ''} {v.labels?.gender || ''} {v.category ? `· ${v.category}` : ''}
+                                </div>
+                              </div>
+                              {v.preview_url && (
+                                <button
+                                  onClick={(e) => { e.stopPropagation(); new Audio(v.preview_url).play(); }}
+                                  className="shrink-0 w-7 h-7 rounded-full bg-paper3 text-muted hover:text-brass flex items-center justify-center transition-colors"
+                                  title="Preview voice"
+                                >
+                                  <Volume2 size={12} />
+                                </button>
+                              )}
+                              {selectedVoice === v.voice_id && <Check size={14} className="text-brass shrink-0" />}
+                            </button>
+                          ))}
+                        </div>
+                      );
+                    }
+
+                    // Fallback defaults by gender + language
+                    const defaults = {
+                      'en-female': [
+                        { id: '21m00Tcm4TlvDq8ikWAM', name: 'Rachel (calm)' },
+                        { id: 'EXAVITQu4vr4xnSDxMaL', name: 'Bella (soft)' },
+                      ],
+                      'en-male': [
+                        { id: '29vD33N1CtxCmqQRPOHJ', name: 'Drew (confident)' },
+                        { id: 'TxGEqnHWrfWFTfGW9XjX', name: 'Josh (deep)' },
+                        { id: 'yoZ06aMxZJJ28mfd3POQ', name: 'Sam (raspy)' },
+                      ],
+                      'es-female': [
+                        { id: 'EXAVITQu4vr4xnSDxMaL', name: 'Bella (suave)' },
+                        { id: '21m00Tcm4TlvDq8ikWAM', name: 'Rachel (calmada)' },
+                      ],
+                      'es-male': [
+                        { id: 'ErXwobaYiN019PkySvjV', name: 'Antoni (cálido)' },
+                        { id: '29vD33N1CtxCmqQRPOHJ', name: 'Drew (confiado)' },
+                      ],
+                    };
+                    const key = `${language}-${actorGender}`;
+                    const opts = defaults[key] || defaults['en-female'];
+                    return (
+                      <select value={selectedVoice} onChange={(e) => setSelectedVoice(e.target.value)} className="input-field">
+                        {opts.map((o) => <option key={o.id} value={o.id}>{o.name}</option>)}
+                      </select>
+                    );
+                  })()
+                )}
                 <p className="text-xs lowercase text-muted mt-1.5">
-                  {actorGender === 'female' ? 'female' : 'male'} voices &middot; multilingual model speaks your selected language &middot; click speaker to preview
+                  {ttsProvider === 'fish_audio'
+                    ? 'your own cloned voices · the model speaks your selected language'
+                    : `${actorGender === 'female' ? 'female' : 'male'} voices · multilingual model speaks your selected language · click speaker to preview`}
                 </p>
               </div>
 
@@ -1100,14 +1185,14 @@ export default function SaaShortsTab({ geminiApiKey, elevenLabsKey, falKey, uplo
                   {(videoMode === 'lowcost'
                     ? [
                         ['Flux image', '$0.05'],
-                        ['ElevenLabs voice', '$0.10'],
+                        [ttsProvider === 'fish_audio' ? 'Fish Audio voice' : 'ElevenLabs voice', '$0.10'],
                         ['Hailuo 2.3 img2video', '$0.19'],
                         ['VEED Lipsync', '$0.20'],
                         ['Flux b-roll', '$0.10'],
                       ]
                     : [
                         ['Flux image', '$0.05'],
-                        ['ElevenLabs voice', '$0.10'],
+                        [ttsProvider === 'fish_audio' ? 'Fish Audio voice' : 'ElevenLabs voice', '$0.10'],
                         ['Kling avatar', '$1.69'],
                         ['Kling b-roll', '$0.70'],
                       ]
@@ -1121,10 +1206,11 @@ export default function SaaShortsTab({ geminiApiKey, elevenLabsKey, falKey, uplo
               </div>
 
               {/* Missing keys warning */}
-              {(!falKey || !elevenLabsKey) && (
+              {(!falKey || !ttsKey) && (
                 <div className="p-3 bg-warn/10 rounded-input flex items-center gap-2 text-sm text-warn">
                   <AlertCircle size={14} />
-                  {!falKey && 'fal.ai API key missing. '}{!elevenLabsKey && 'ElevenLabs API key missing. '}
+                  {!falKey && 'fal.ai API key missing. '}
+                  {!ttsKey && (ttsProvider === 'fish_audio' ? 'Fish Audio API key missing. ' : 'ElevenLabs API key missing. ')}
                   Set them in Settings.
                 </div>
               )}
@@ -1151,7 +1237,7 @@ export default function SaaShortsTab({ geminiApiKey, elevenLabsKey, falKey, uplo
               </button>
               <button
                 onClick={handleGenerate}
-                disabled={!falKey || !elevenLabsKey || !selectedActor || generating}
+                disabled={!falKey || !ttsKey || !selectedActor || generating}
                 className="btn-primary px-6 py-2 text-sm"
               >
                 {generating ? (

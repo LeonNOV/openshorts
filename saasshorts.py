@@ -3,10 +3,10 @@ SaaSShorts: AI-powered UGC video generator for SaaS products.
 
 Generates viral TikTok/Instagram Reels content from a SaaS URL.
 Pipeline:
-  1. Scrape & analyze SaaS website (Gemini)
+  1. Scrape & analyze SaaS website (Gemini or DeepSeek)
   2. Generate video scripts (hook → problem → solution → CTA)
   3. Generate AI actor portrait (Flux Pro via fal.ai)
-  4. Generate voiceover (ElevenLabs TTS)
+  4. Generate voiceover (ElevenLabs or Fish Audio TTS)
   5. Generate talking head video (Kling Avatar v2 via fal.ai)
   6. Generate b-roll clips (Kling v2.6 via fal.ai)
   7. Composite final video with subtitles (FFmpeg)
@@ -20,6 +20,7 @@ import subprocess
 
 from ffmpeg_utils import video_encode_args, DELIVERY, mark_ai_generated
 import httpx
+import llm_provider
 from urllib.parse import urljoin
 from typing import Optional, List, Dict, Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -258,17 +259,13 @@ def scrape_website(url: str) -> dict:
     return result
 
 
-def analyze_saas(scraped_data: dict, gemini_key: str, web_research: dict = None) -> dict:
+def analyze_saas(scraped_data: dict, gemini_key: str, web_research: dict = None,
+                 provider: str = "gemini") -> dict:
     """
     Deep analysis of a SaaS product combining website scraping + web research.
-    Uses Gemini 3 Flash for synthesis.
+    Uses Gemini 3 Flash (or DeepSeek) for synthesis.
     """
-    from google import genai
-    from google.genai import types
-
     print(f"[SaaSShorts] 🧠 Analyzing {scraped_data['url']} (with web research)...")
-
-    client = genai.Client(api_key=gemini_key)
 
     # Build web research context
     research_context = ""
@@ -351,33 +348,13 @@ Return a JSON object:
     ]
 }}
 
-IMPORTANT: Use REAL pain points from user reviews when available. Real frustrations make the best UGC content.
+    IMPORTANT: Use REAL pain points from user reviews when available. Real frustrations make the best UGC content.
 Include 5-8 pain points, 4-6 emotional hooks, and 4+ viral angles."""
 
-    response = client.models.generate_content(
-        model=GEMINI_MODEL,
-        contents=[prompt],
-        config=types.GenerateContentConfig(response_mime_type="application/json"),
-    )
-
-    raw = response.text
-    if not raw:
-        raise Exception("Gemini returned empty response for SaaS analysis")
-
-    text = raw.strip()
-    if text.startswith("```"):
-        text = re.sub(r"^```(?:json)?\n?", "", text)
-        text = re.sub(r"\n?```$", "", text)
-
-    start = text.find("{")
-    end = text.rfind("}")
-    if start != -1 and end != -1:
-        text = text[start : end + 1]
-
-    try:
-        analysis = json.loads(text)
-    except json.JSONDecodeError as e:
-        raise Exception(f"Failed to parse analysis JSON: {e}\nRaw: {text[:500]}")
+    analysis, _cost = llm_provider.generate_json(prompt, api_key=gemini_key,
+                                                  provider_name=provider)
+    if not isinstance(analysis, dict):
+        raise Exception("Model did not return a JSON object for the SaaS analysis")
 
     # Attach web research sources for reference
     if web_research and web_research.get("grounding_sources"):
@@ -394,15 +371,11 @@ def generate_scripts(
     style: str = "ugc",
     language: str = "en",
     actor_gender: str = "female",
+    provider: str = "gemini",
 ) -> list:
     """Generate video scripts based on SaaS analysis."""
-    from google import genai
-    from google.genai import types
-
     lang_name = "Spanish" if language == "es" else "English"
     print(f"[SaaSShorts] 📝 Generating {num_scripts} scripts ({style}, {lang_name})...")
-
-    client = genai.Client(api_key=gemini_key)
 
     style_guide = {
         "ugc": "Natural, authentic UGC style. Person talking to camera like sharing a discovery with a friend. Casual, genuine.",
@@ -536,33 +509,10 @@ RULES:
 - Example female: "a 26 year old attractive european woman, light brown wavy hair, wearing a white tank top, natural minimal makeup, friendly face"
 - Example male: "a 29 year old european man, short dark hair, light stubble, wearing a navy t-shirt, smart casual look" """
 
-    response = client.models.generate_content(
-        model=GEMINI_MODEL,
-        contents=[prompt],
-        config=types.GenerateContentConfig(
-            response_mime_type="application/json",
-            max_output_tokens=8192,
-        ),
-    )
-
-    raw = response.text
-    if not raw:
-        raise Exception("Gemini returned empty response for script generation")
-
-    text = raw.strip()
-    if text.startswith("```"):
-        text = re.sub(r"^```(?:json)?\n?", "", text)
-        text = re.sub(r"\n?```$", "", text)
-
-    start = text.find("[")
-    end = text.rfind("]")
-    if start != -1 and end != -1:
-        text = text[start : end + 1]
-
-    try:
-        scripts = json.loads(text)
-    except json.JSONDecodeError as e:
-        raise Exception(f"Failed to parse scripts JSON: {e}\nRaw: {text[:500]}")
+    scripts, _cost = llm_provider.generate_json(prompt, api_key=gemini_key,
+                                                provider_name=provider)
+    if not isinstance(scripts, list):
+        raise Exception("Model did not return a JSON array of scripts")
 
     print(f"[SaaSShorts] ✅ Generated {len(scripts)} scripts")
     return scripts
@@ -776,11 +726,33 @@ def generate_actor_image(
     return output_path
 
 
+def _synthesize_voice(text: str, provider: str, api_key: str, output_path: str,
+                      voice_id: str, model: Optional[str] = None) -> str:
+    """Synthesize the narration with whichever voice provider was chosen.
+
+    Fish Audio speaks through its own TTS endpoint (with the model in a
+    header); ElevenLabs keeps the inline call below. The dashboard picks one
+    of the two and sends that provider's key.
+    """
+    if provider == "fish_audio":
+        import fish_audio
+        print(f"[SaaSShorts] 🎙️ Generating voiceover with Fish Audio "
+              f"({model or fish_audio.default_model()}, {len(text)} chars)...")
+        fish_audio.generate_speech(text, api_key, output_path,
+                                   model=model or fish_audio.default_model(),
+                                   reference_id=voice_id or None)
+        print(f"[SaaSShorts] ✅ Voiceover: {output_path}")
+        return output_path
+    return generate_voiceover(text, api_key, output_path, voice_id=voice_id,
+                              model_id=model or "eleven_multilingual_v2")
+
+
 def generate_voiceover(
     text: str,
     elevenlabs_key: str,
     output_path: str,
     voice_id: str = "21m00Tcm4TlvDq8ikWAM",
+    model_id: str = "eleven_multilingual_v2",
 ) -> str:
     """Generate voiceover audio using ElevenLabs TTS."""
     print(f"[SaaSShorts] 🎙️ Generating voiceover ({len(text)} chars)...")
@@ -794,7 +766,7 @@ def generate_voiceover(
 
     body = {
         "text": text,
-        "model_id": "eleven_multilingual_v2",
+        "model_id": model_id,
         "voice_settings": {
             "stability": 0.5,
             "similarity_boost": 0.75,
@@ -1325,6 +1297,9 @@ def generate_full_video(
         config: {
             "fal_key": str,
             "elevenlabs_key": str,
+            "tts_provider": str (optional: "elevenlabs" | "fish_audio"),
+            "tts_key": str (optional: the key for the selected provider),
+            "tts_model": str (optional: the provider's model id),
             "voice_id": str (optional),
             "actor_description": str (optional, overrides script),
         }
@@ -1337,7 +1312,11 @@ def generate_full_video(
     os.makedirs(output_dir, exist_ok=True)
 
     fal_key = config["fal_key"]
-    elevenlabs_key = config["elevenlabs_key"]
+    # The voice provider is either/or: the key for the chosen provider rides
+    # along in tts_key, and tts_provider says which one it is.
+    tts_provider = config.get("tts_provider") or "elevenlabs"
+    tts_key = config.get("tts_key") or config.get("elevenlabs_key")
+    tts_model = config.get("tts_model")
     voice_id = config.get("voice_id", "21m00Tcm4TlvDq8ikWAM")
     actor_desc = config.get("actor_description") or script.get("actor_description", "a young professional in their late 20s, wearing a casual modern outfit, clean background")
 
@@ -1381,7 +1360,8 @@ def generate_full_video(
         with ThreadPoolExecutor(max_workers=2) as executor:
             future_img = executor.submit(generate_actor_image, actor_desc, fal_key, actor_img) if need_img else None
             future_voice = executor.submit(
-                generate_voiceover, full_narration, elevenlabs_key, audio_path, voice_id
+                _synthesize_voice, full_narration, tts_provider, tts_key,
+                audio_path, voice_id, tts_model
             ) if need_voice else None
 
             if future_img:
@@ -1473,10 +1453,19 @@ def generate_full_video(
 
     # Cost estimate
     audio_duration = _get_media_duration(audio_path)
+    # Fish Audio bills $15 per 1M UTF-8 bytes; ElevenLabs ~$0.00003 per
+    # character. The key names the provider so the breakdown says which bill
+    # the user is looking at.
+    if tts_provider == "fish_audio":
+        voice_key = "voiceover_fish_audio"
+        voice_cost = round(len(full_narration.encode("utf-8")) * 0.000015, 4)
+    else:
+        voice_key = "voiceover_elevenlabs"
+        voice_cost = round(len(full_narration) * 0.00003, 3)
     if video_mode == "lowcost":
         cost = {
             "actor_image_flux": 0.05,
-            "voiceover_elevenlabs": round(len(full_narration) * 0.00003, 3),
+            voice_key: voice_cost,
             "hailuo_img2video": 0.19,
             "veed_lipsync": 0.20,
             "broll_flux": round(len(broll_clips) * 0.05, 2),
@@ -1485,7 +1474,7 @@ def generate_full_video(
     else:
         cost = {
             "actor_image_flux": 0.05,
-            "voiceover_elevenlabs": round(len(full_narration) * 0.00003, 3),
+            voice_key: voice_cost,
             "talking_head_kling": round(audio_duration * 0.056, 2),
             "broll_kling": round(len(broll_clips) * 5 * 0.07, 2),
             "ffmpeg_compositing": 0.00,

@@ -39,7 +39,8 @@ Ingest (yt-dlp or upload) → transcription (word timestamps) → scene detectio
 
 - SEO pages, free tools, attribution → `docs/architecture/seo-and-tools.md`
 - Layout picker, reframing modes, hook grounding → `docs/architecture/layouts-and-reframing.md`
-- Clip count, silent-footage fallback, local LLM → `docs/architecture/clip-selection.md`
+- Clip count, silent-footage fallback, local LLM, DeepSeek → `docs/architecture/clip-selection.md`
+- Voice providers: ElevenLabs vs Fish Audio, dubbing → `docs/architecture/voice-providers.md`
 - Thumbnail Studio → `docs/architecture/thumbnails.md`
 - API endpoints, API keys, MCP, OAuth, webhooks → `docs/architecture/agent-access.md`
 - Autopilot → `docs/architecture/autopilot.md`
@@ -70,6 +71,13 @@ Ingest (yt-dlp or upload) → transcription (word timestamps) → scene detectio
 **Clip selection**
 - The scoring pass ranks every window (global top N), never "choose up to K per batch". The `min_clips` floor is enforced in code.
 - `get_visual_clips` is the only stage that sends Gemini the video; nothing guards its length.
+
+**AI providers**
+- The voice is either/or: ElevenLabs or Fish Audio, and the selected provider's key is the one that is sent; the other provider's key never travels. The *text* model is not either/or in the same way — `X-DeepSeek-Key` and `X-Gemini-Key` are sent together when both are set, because DeepSeek answers the text stages while only Gemini can read frames.
+- Only Gemini looks at frames or uploads video. The frame-based stages (layout picker, screen detector, hook grounding, burned-in subtitles) and the video stages (AI editor, silent-video clipping) stay on Gemini, and degrade to their documented fallbacks without a Gemini key.
+- The two keys never share a slot. `DEEPSEEK_API_KEY` and `GEMINI_API_KEY` are separate variables in the child environment; a DeepSeek key in `GEMINI_API_KEY` would make the frame-based stages fail with a Google auth error instead of degrading.
+- A Gemini request must clear `LLM_PROVIDER` and `DEEPSEEK_API_KEY` from the child environment, or a stale server key answers a job that asked for Gemini.
+- A Fish Audio dub replaces the original audio; it does not mix two voices over each other. It needs the clip's transcript — Fish Audio speaks text, it cannot transcribe a video.
 
 **Jobs, GPU, deploys**
 - Call `transcribe_backends.release_models()` after any ASR (job processes and in-API transcriptions alike). Size `MAX_CONCURRENT_JOBS` by free VRAM first.

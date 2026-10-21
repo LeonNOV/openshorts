@@ -1,7 +1,14 @@
 import React, { useState, useEffect } from 'react';
 import { Key, Eye, EyeOff, Check } from 'lucide-react';
 
-export default function KeyInput({ onKeySet, savedKey }) {
+/**
+ * The key input for one provider.
+ *
+ * The label, the placeholder and the "get a key" link follow the provider,
+ * so the Gemini and DeepSeek fields do not drift apart. They all default to
+ * Gemini, which is what this component was before.
+ */
+export default function KeyInput({ onKeySet, savedKey, label = 'Gemini API Key', placeholder = 'AIzaSy...', linkUrl = 'https://aistudio.google.com/app/apikey', linkText = 'Get your free Gemini API Key here →' }) {
     const [key, setKey] = useState(savedKey || '');
     const [isVisible, setIsVisible] = useState(false);
     const [isSaved, setIsSaved] = useState(!!savedKey);
@@ -23,7 +30,7 @@ export default function KeyInput({ onKeySet, savedKey }) {
                 <div className="p-2 bg-paper3 rounded-input text-brass">
                     <Key size={18} />
                 </div>
-                <h2 className="font-display lowercase text-lg text-ink">Gemini API Key</h2>
+                <h2 className="font-display lowercase text-lg text-ink">{label}</h2>
             </div>
 
             <div className="flex flex-col sm:flex-row gap-3">
@@ -35,7 +42,7 @@ export default function KeyInput({ onKeySet, savedKey }) {
                             setKey(e.target.value);
                             setIsSaved(false);
                         }}
-                        placeholder="AIzaSy..."
+                        placeholder={placeholder}
                         className="input-field pr-12 font-mono"
                     />
                     <button
@@ -57,12 +64,12 @@ export default function KeyInput({ onKeySet, savedKey }) {
                 Your key is stored locally in your browser for convenience.
                 <br />
                 <a
-                    href="https://aistudio.google.com/app/apikey"
+                    href={linkUrl}
                     target="_blank"
                     rel="noopener noreferrer"
                     className="text-brass hover:underline mt-1 inline-block"
                 >
-                    Get your free Gemini API Key here →
+                    {linkText} →
                 </a>
             </p>
         </div>

@@ -61,3 +61,40 @@ silently). Self-host `/api/process` then accepts a request without
 `X-Gemini-Key` and `/api/config.localLlm` tells the dashboard not to demand one.
 Frame-based stages (`layout_picker`, `screencast_layout`, `get_visual_clips`)
 stay on Gemini. Never wired in cloud mode: `BILLING_ENABLED` ignores it.
+
+## DeepSeek as the text model (`llm_backend.py`, `llm_provider.py`)
+
+DeepSeek speaks the same OpenAI chat-completions protocol, so it reuses that
+transport: `llm_backend.provider()` returns `"deepseek"` and `settings()` fills
+in DeepSeek's base URL, model and key. Three rules make it behave:
+
+- **The provider is a choice, not an addition.** `LLM_PROVIDER=deepseek` (or a
+  `DEEPSEEK_API_KEY` in the environment) puts DeepSeek in the text stages; an
+  explicit `LLM_PROVIDER=gemini` or a `LLM_BASE_URL` still wins over it. The
+  dashboard sends `X-DeepSeek-Key` when the user picks DeepSeek, and the
+  backend sets `LLM_PROVIDER`/`DEEPSEEK_API_KEY` in the child environment — a
+  Gemini request explicitly clears both, so a stale server key cannot answer a
+  job that asked for Gemini.
+- **Only the text work moves.** The frame-based stages (`layout_picker`,
+  `screencast_layout`, `hook_grounding`, `burned_subtitles`) and the video
+  stages (`get_visual_clips`, the AI editor) still need Gemini, because only
+  Gemini looks at frames and uploads video. With a Gemini key set, both work:
+  DeepSeek writes, Gemini sees.
+- **The two keys never share a slot.** `resolve_llm` answers "who writes?" and
+  `resolve_gemini` answers "who sees?" — two different questions, so the
+  child environment gets `DEEPSEEK_API_KEY` *and* `GEMINI_API_KEY`, never one
+  in the other's place. A DeepSeek key in `GEMINI_API_KEY` would make the
+  frame-based stages fail with a Google auth error instead of degrading the
+  way they do without a key. The dashboard sends both headers when both keys
+  are set, so picking DeepSeek costs nothing on the frame-based stages.
+- **DeepSeek reasons by default, and that costs output tokens.** The request
+  sets `thinking: {"type": "disabled"}` on the V4 models (the retired
+  `deepseek-chat` names reject the field, so it is dropped on a 400) and asks
+  for JSON mode first, which DeepSeek serves but `json_schema` is not
+  documented for. A `finish_reason` of `length` is refused rather than parsed:
+  a truncated object can still be valid JSON while missing fields.
+
+`llm_provider.py` is the facade the text stages use: it picks Gemini or the
+OpenAI-compatible transport, and it is the only place that knows a text answer
+may be an object (`analyze_saas`) or an array (`generate_scripts`).
+

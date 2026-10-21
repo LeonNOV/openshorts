@@ -166,3 +166,12 @@ Hash routing (`#app`, `#/pricing`, `#/account`, `#legal`, `#features`,
 `uploadUserId`, `openshorts_session`, `openshorts_auth`,
 `openshorts_skip_landing`), API calls and BYOK headers, QuotaError flows,
 Remotion preview/render wiring. Redesign is classes + markup structure only.
+
+New keys ride alongside, never replacing the above:
+`deepseekKey_v1`, `llmProvider_v1`, `fishAudioKey_v1`, `fishAudioModel_v1`,
+`ttsProvider_v1`. The BYOK headers `X-DeepSeek-Key` and `X-Fish-Audio-Key`
+join `X-Gemini-Key` and `X-ElevenLabs-Key`. The voice providers are strictly
+either/or: a request sends the key of the voice provider the user picked and
+only that one. The text models are not: `X-DeepSeek-Key` and `X-Gemini-Key`
+are sent together when both are set, because DeepSeek answers the text stages
+while Gemini is still the only one that can read frames.

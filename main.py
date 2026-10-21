@@ -1931,7 +1931,10 @@ def _run_gemini_stage(client, model_name, prompt, schema):
                 # OpenAI-compatible servers: model still loading, busy, or a
                 # small model that skipped a required field this time.
                 'ConnectError', 'ReadTimeout', 'RemoteProtocolError', '502', '504',
-                'validation error'))
+                'validation error',
+                # DeepSeek: a truncated answer is retried with a bigger
+                # budget, and a malformed one is worth one more try.
+                'ran out of output tokens', 'Failed to parse LLM JSON response'))
             if attempt == max_attempts or not transient:
                 raise
             wait = 5 * (2 ** (attempt - 1))
@@ -1970,14 +1973,18 @@ def _run_stage_split(client, model_name, items, build_prompt, schema, key, costs
 
 def score_batch_size():
     """Transcript windows per scoring call: ``LLM_SCORE_BATCH`` if set, else
-    8 for Gemini (1M context) and 3 for an OpenAI-compatible server."""
+    8 for Gemini and DeepSeek (both have a 1M context) and 3 for a local
+    OpenAI-compatible server, which usually runs with a 4-8k context where
+    8 windows of transcript do not fit."""
     raw = os.environ.get("LLM_SCORE_BATCH", "").strip()
     if raw:
         try:
             return max(1, int(raw))
         except ValueError:
             pass
-    return 3 if llm_backend.active() else 8
+    if llm_backend.active() and llm_backend.provider() == llm_backend.PROVIDER_OPENAI:
+        return 3
+    return 8
 
 
 def get_viral_clips(transcript_result, video_duration):
@@ -1990,16 +1997,21 @@ def get_viral_clips(transcript_result, video_duration):
     """
     language = str(transcript_result.get('language') or 'unknown')
     if llm_backend.active():
-        # Self-hosted text model: no Google key needed for this stage.
+        # Self-hosted text model (or DeepSeek): no Google key needed for this
+        # stage; the frame-based stages still use Gemini when a key is present.
         client = None
         model_name = llm_backend.model_name()
-        print(f"\U0001f916  Analyzing with local LLM at {llm_backend.base_url()} (2-pass: score → detail)...")
+        provider_label = ("DeepSeek" if llm_backend.provider() == llm_backend.PROVIDER_DEEPSEEK
+                          else "local LLM")
+        print(f"\U0001f916  Analyzing with {provider_label} at {llm_backend.base_url()} "
+              f"(2-pass: score → detail)...")
     else:
         print("\U0001f916  Analyzing with Gemini (2-pass: score → detail)...")
         api_key = os.getenv("GEMINI_API_KEY")
         if not api_key:
             print("❌ Error: GEMINI_API_KEY not found in environment variables "
-                  "(set it, or point LLM_BASE_URL at an OpenAI-compatible server).")
+                  "(set it, point LLM_BASE_URL at an OpenAI-compatible server, "
+                  "or set DEEPSEEK_API_KEY).")
             return None
         client = genai.Client(api_key=api_key)
         model_name = os.environ.get("GEMINI_MODEL") or 'gemini-3.1-flash-lite'
@@ -2177,8 +2189,8 @@ def get_visual_clips(video_path, video_duration, language="en"):
     if not api_key:
         if llm_backend.active():
             print("❌ This video has no usable speech, so it has to be clipped by "
-                  "watching it, and that needs Gemini (a text-only LLM server "
-                  "cannot see the footage). Add a GEMINI_API_KEY for silent videos.")
+                  "watching it, and that needs Gemini (a text-only LLM cannot "
+                  "see the footage). Add a GEMINI_API_KEY for silent videos.")
         else:
             print("❌ Error: GEMINI_API_KEY not found.")
         return None

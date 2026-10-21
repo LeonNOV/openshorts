@@ -15,6 +15,14 @@ MODEL_PRICES = {
     "gemini-2.0-flash": (0.10, 0.40),  # deprecated (shut down 2026-06-01)
 }
 
+# USD per 1M tokens (input, output), from api-docs.deepseek.com. "deepseek-chat"
+# and "deepseek-reasoner" were retired on 2026-07-24, so only the V4 pair is
+# priced here.
+DEEPSEEK_MODEL_PRICES = {
+    "deepseek-v4-flash": (0.14, 0.28),
+    "deepseek-v4-pro": (0.435, 0.87),
+}
+
 
 def lookup_model_prices(model_name):
     """Longest-prefix match against MODEL_PRICES; None if unknown."""

@@ -1,5 +1,6 @@
 import os
 import llm_backend
+import llm_provider
 import re
 import sys
 import uuid
@@ -88,7 +89,7 @@ CHILD_ENV_DENYLIST = frozenset({
     "MANAGED_UPLOAD_POST_API_KEY", "MANAGED_GEMINI_API_KEY", "UPLOAD_POST_API_KEY",
     "R2_ACCESS_KEY_ID", "R2_SECRET_ACCESS_KEY",
     "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY",
-    "OPENPANEL_CLIENT_SECRET", "ELEVENLABS_API_KEY",
+    "OPENPANEL_CLIENT_SECRET", "ELEVENLABS_API_KEY", "FISH_AUDIO_API_KEY",
 })
 
 
@@ -184,6 +185,40 @@ async def resolve_gemini(request: Request) -> Optional[str]:
     if header:
         return header
     return os.environ.get("GEMINI_API_KEY")
+
+
+async def resolve_llm(request: Request) -> tuple:
+    """Resolve the text LLM for a request: (provider, key).
+
+    Gemini and DeepSeek are the two choices the dashboard offers. Gemini is
+    the default and the only one that can look at frames, so it stays the
+    fallback when no DeepSeek key is supplied.
+
+    Cloud (hosted) is paid-only like the Gemini key: an entitled user gets the
+    managed Gemini key, so a BYOK DeepSeek key never displaces it there.
+    """
+    if BILLING_ENABLED:
+        user = await _user_from_request(request)
+        if managed_keys.has_active_entitlement(user):
+            return "gemini", managed_keys.gemini_key()
+        return "gemini", None
+    deepseek = request.headers.get("X-DeepSeek-Key")
+    if deepseek:
+        return "deepseek", deepseek
+    gemini = request.headers.get("X-Gemini-Key")
+    if gemini:
+        return "gemini", gemini
+    return "gemini", os.environ.get("GEMINI_API_KEY")
+
+
+def llm_missing_error(provider: str = "gemini"):
+    """The right 4xx when no LLM key could be resolved for ``provider``."""
+    if BILLING_ENABLED:
+        return payment_required(
+            "no_plan", "This action needs an active OpenShorts plan (or the user's own API key).")
+    if provider == "deepseek":
+        return HTTPException(status_code=400, detail="Missing X-DeepSeek-Key header")
+    return HTTPException(status_code=400, detail="Missing X-Gemini-Key header")
 
 
 async def resolve_upload_post(request: Request, body_key: Optional[str] = None):
@@ -3095,13 +3130,17 @@ async def process_endpoint(
     upload_id: Optional[str] = Form(None),
     max_minutes: Optional[str] = Form(None),
 ):
-    api_key = await resolve_gemini(request)
-    if not api_key and not (llm_backend.active() and not BILLING_ENABLED):
-        # Self-host with an OpenAI-compatible server configured needs no
-        # Google key for the core pipeline: the moment picker runs there and
-        # the frame-based stages degrade on their own (layout_picker returns
-        # "none", silent videos fail with a message that says why).
-        raise gemini_missing_error()
+    # Two different keys for two different jobs. The Gemini key feeds the
+    # frame-based stages (layout picker, screen check, hook grounding); the
+    # text LLM answers the moment picker and the title/hook passes. When
+    # DeepSeek is picked, the text LLM key is the DeepSeek one and Gemini
+    # keeps whatever it had — a DeepSeek key is not a Google key.
+    gemini_key = await resolve_gemini(request)
+    llm_provider_name, llm_key = await resolve_llm(request)
+    # The pipeline needs a text LLM to run at all. A local OpenAI-compatible
+    # server on the server itself counts (self-host, no Google key needed).
+    if not llm_key and not (llm_backend.active() and not BILLING_ENABLED):
+        raise llm_missing_error(llm_provider_name)
 
     ack_flag = str(acknowledged).lower() in ("1", "true", "yes")
     # May be lowered by the paid-proxy budget check in the metering block
@@ -3212,10 +3251,24 @@ async def process_endpoint(
     if not paid_allowed:
         # Daily paid-proxy budget hit: this job runs on the free routes only.
         env.pop("PROXY_URL", None)
-    if api_key:
-        env["GEMINI_API_KEY"] = api_key # Override with key from request
+    if gemini_key:
+        env["GEMINI_API_KEY"] = gemini_key # Override with key from request
     else:
-        env.pop("GEMINI_API_KEY", None)  # local-LLM job: main.py must not find a stale key
+        # No Google key: the frame-based stages degrade on their own
+        # (layout_picker returns "none", silent videos fail with a message
+        # that says why). main.py must not find a stale key either.
+        env.pop("GEMINI_API_KEY", None)
+    if llm_provider_name == "deepseek":
+        # DeepSeek answers the text stages. llm_backend reads these two to
+        # route the moment picker there, so the child needs no code change.
+        env["LLM_PROVIDER"] = "deepseek"
+        env["DEEPSEEK_API_KEY"] = llm_key
+    else:
+        # A Gemini request must not inherit a DeepSeek key from the server
+        # env, or the text stages would silently answer from the wrong
+        # provider.
+        env.pop("LLM_PROVIDER", None)
+        env.pop("DEEPSEEK_API_KEY", None)
     # The stdio fix above only covers this process. main.py prints an emoji on
     # its first line and configures nothing, so on a cp1252 console the child
     # still dies before it renders anything -- the server starts and every job
@@ -5453,20 +5506,82 @@ class TranslateRequest(BaseModel):
     target_language: str
     source_language: Optional[str] = None
     input_filename: Optional[str] = None
+    # The voice provider is either/or: "elevenlabs" (its Dubbing API) or
+    # "fish_audio" (synthesized from the transcript).
+    tts_provider: str = "elevenlabs"
+    # The Fish Audio model to synthesize with.
+    tts_model: Optional[str] = None
+    # The Fish Audio voice (reference_id) to speak with.
+    tts_voice_id: Optional[str] = None
 
 @app.get("/api/translate/languages")
 async def get_languages():
     """Return supported languages for translation."""
     return {"languages": get_supported_languages()}
 
+
+def _fish_audio_dub(req, data, clip_data, input_path, output_path, api_key, output_dir,
+                    llm_provider_name, llm_key):
+    """Dub a clip with Fish Audio, from the transcript the pipeline stored.
+
+    Fish Audio synthesizes speech from text, so the clip's transcript is
+    translated by the configured LLM and then spoken by Fish Audio, segment
+    by segment, on the original timeline.
+    """
+    import fish_dub
+
+    transcript = data.get("transcript")
+    if not transcript:
+        raise Exception(
+            "This clip has no transcript, so there is nothing to dub. "
+            "Fish Audio speaks text; it cannot transcribe a video.")
+
+    # Recut clips are concatenations of source segments; their transcript is
+    # already remapped onto the clip timeline, so the range starts at 0.
+    recipe_segments = (clip_data.get("recipe") or {}).get("segments")
+    if recipe_segments:
+        import recut
+        transcript = recut.virtual_transcript(transcript, recipe_segments)
+        clip_start, clip_end = 0.0, recut.total_duration(recipe_segments)
+    else:
+        clip_start = clip_data.get("start", 0)
+        clip_end = clip_data.get("end", 0)
+
+    def translate_fn(texts, language):
+        return llm_provider.translate(texts, language, api_key=llm_key,
+                                     provider_name=llm_provider_name)
+
+    work_dir = os.path.join(output_dir, f"dub_{req.job_id}_{req.clip_index}")
+    return fish_dub.dub_clip(
+        video_path=input_path,
+        output_path=output_path,
+        transcript=transcript,
+        clip_start=clip_start,
+        clip_end=clip_end,
+        target_language=req.target_language,
+        api_key=api_key,
+        work_dir=work_dir,
+        translate_fn=translate_fn,
+        model=req.tts_model,
+        voice_id=req.tts_voice_id,
+    )
+
+
 @app.post("/api/translate")
 async def translate_clip(
     req: TranslateRequest,
     request: Request,
-    x_elevenlabs_key: Optional[str] = Header(None, alias="X-ElevenLabs-Key")
+    x_elevenlabs_key: Optional[str] = Header(None, alias="X-ElevenLabs-Key"),
+    x_fish_audio_key: Optional[str] = Header(None, alias="X-Fish-Audio-Key"),
 ):
-    """Translate a video clip to a different language using ElevenLabs dubbing."""
-    if not x_elevenlabs_key:
+    """Translate a video clip to a different language using the chosen provider."""
+    tts_provider = (req.tts_provider or "elevenlabs").strip().lower()
+    if tts_provider not in ("elevenlabs", "fish_audio"):
+        raise HTTPException(status_code=400, detail="Unknown voice provider")
+    tts_key = x_fish_audio_key if tts_provider == "fish_audio" else x_elevenlabs_key
+    if not tts_key:
+        if tts_provider == "fish_audio":
+            raise HTTPException(status_code=400, detail="Missing Fish Audio API Key (X-Fish-Audio-Key header)")
         raise HTTPException(status_code=400, detail="Missing X-ElevenLabs-Key header")
 
     await _ensure_job_files(req.job_id, request)
@@ -5508,14 +5623,27 @@ async def translate_clip(
     output_filename = f"translated_{req.target_language}_{base}{ext}"
     output_path = os.path.join(output_dir, output_filename)
 
+    # The dubbing path translates the transcript, so it needs an LLM too —
+    # resolved here, in the request context, before the thread pool starts.
+    llm_provider_name, llm_key = await resolve_llm(request)
+    if tts_provider == "fish_audio" and not llm_key:
+        raise llm_missing_error(llm_provider_name)
+
     try:
         # Run translation in thread pool (blocking API calls)
         def run_translate():
+            if tts_provider == "fish_audio":
+                return _fish_audio_dub(
+                    req=req, data=data, clip_data=clip_data,
+                    input_path=input_path, output_path=output_path,
+                    api_key=tts_key, output_dir=output_dir,
+                    llm_provider_name=llm_provider_name, llm_key=llm_key,
+                )
             return translate_video(
                 video_path=input_path,
                 output_path=output_path,
                 target_language=req.target_language,
-                api_key=x_elevenlabs_key,
+                api_key=tts_key,
                 source_language=req.source_language,
             )
 
@@ -6588,6 +6716,7 @@ from saasshorts import (
     get_elevenlabs_voices,
     DEFAULT_VOICES,
 )
+import tts
 
 # State for SaaSShorts jobs (separate from video processing jobs)
 saas_jobs: Dict[str, Dict] = {}
@@ -6608,9 +6737,10 @@ async def saasshorts_analyze(
     request: Request,
 ):
     """Analyze a URL or manual description and generate video scripts."""
-    gemini_key = await resolve_gemini(request)
+    provider_name, llm_key = await resolve_llm(request)
+    gemini_key = llm_key
     if not gemini_key:
-        raise gemini_missing_error()
+        raise llm_missing_error(provider_name)
 
     if not req.url and not req.description:
         raise HTTPException(status_code=400, detail="Provide a URL or a product description")
@@ -6628,8 +6758,12 @@ async def saasshorts_analyze(
             if req.url and req.url.strip():
                 # URL provided: full scrape + research pipeline
                 scraped = scrape_website(req.url)
-                web_research = research_saas_online(req.url, gemini_key)
-                analysis = analyze_saas(scraped, gemini_key, web_research=web_research)
+                if provider_name == "gemini":
+                    # Google Search grounding is a Gemini-only capability, so
+                    # the DeepSeek path researches from the scraped pages alone.
+                    web_research = research_saas_online(req.url, gemini_key)
+                analysis = analyze_saas(scraped, gemini_key, web_research=web_research,
+                                         provider=provider_name)
             else:
                 # Manual description: build analysis from description
                 analysis = {
@@ -6642,7 +6776,8 @@ async def saasshorts_analyze(
                     "tone": "casual and authentic",
                 }
 
-            scripts = generate_scripts(analysis, gemini_key, req.num_scripts, req.style, req.language, req.actor_gender)
+            scripts = generate_scripts(analysis, gemini_key, req.num_scripts, req.style,
+                                       req.language, req.actor_gender, provider=provider_name)
             return {
                 "analysis": analysis,
                 "scripts": scripts,
@@ -7106,6 +7241,11 @@ class SaaSGenerateRequest(BaseModel):
     # Publishing to the public /gallery is opt-in: generated videos carry the
     # user's product name, URL and full script.
     share_to_gallery: bool = False
+    # The voice provider is either/or: "elevenlabs" or "fish_audio". The key
+    # for the chosen one rides in the matching X-* header.
+    tts_provider: str = "elevenlabs"
+    # The model id of the chosen provider (Fish Audio picks one per call).
+    tts_model: Optional[str] = None
 
 
 @app.post("/api/saasshorts/generate")
@@ -7114,15 +7254,22 @@ async def saasshorts_generate(
     request: Request,
     x_fal_key: Optional[str] = Header(None, alias="X-Fal-Key"),
     x_elevenlabs_key: Optional[str] = Header(None, alias="X-ElevenLabs-Key"),
+    x_fish_audio_key: Optional[str] = Header(None, alias="X-Fish-Audio-Key"),
 ):
     """Generate a SaaS UGC video from a script. Returns a job_id for polling."""
     await require_managed_entitlement(request)
     fal_key = x_fal_key
-    elevenlabs_key = x_elevenlabs_key
+    tts_provider = (req.tts_provider or "elevenlabs").strip().lower()
+    if tts_provider not in ("elevenlabs", "fish_audio"):
+        raise HTTPException(status_code=400, detail="Unknown voice provider")
+    # The key belongs to the chosen provider; the other one is ignored.
+    tts_key = x_fish_audio_key if tts_provider == "fish_audio" else x_elevenlabs_key
 
     if not fal_key:
         raise HTTPException(status_code=400, detail="Missing fal.ai API Key (X-Fal-Key header)")
-    if not elevenlabs_key:
+    if not tts_key:
+        if tts_provider == "fish_audio":
+            raise HTTPException(status_code=400, detail="Missing Fish Audio API Key (X-Fish-Audio-Key header)")
         raise HTTPException(status_code=400, detail="Missing ElevenLabs API Key (X-ElevenLabs-Key header)")
 
     # Support retry: reuse output_dir so cached assets (image, voice, head, broll) are kept
@@ -7200,7 +7347,10 @@ async def saasshorts_generate(
 
     config = {
         "fal_key": fal_key,
-        "elevenlabs_key": elevenlabs_key,
+        "elevenlabs_key": tts_key,
+        "tts_provider": tts_provider,
+        "tts_key": tts_key,
+        "tts_model": req.tts_model,
         "voice_id": req.voice_id or "21m00Tcm4TlvDq8ikWAM",
         "actor_description": req.actor_description,
         "selected_actor_path": selected_actor_path,
@@ -7297,18 +7447,44 @@ async def saasshorts_status(job_id: str, request: Request):
 @app.get("/api/saasshorts/voices")
 async def saasshorts_voices(
     x_elevenlabs_key: Optional[str] = Header(None, alias="X-ElevenLabs-Key"),
+    x_fish_audio_key: Optional[str] = Header(None, alias="X-Fish-Audio-Key"),
+    provider: str = "elevenlabs",
 ):
-    """List available ElevenLabs voices."""
-    if x_elevenlabs_key:
+    """List the voices of the chosen voice provider, plus its models.
+
+    The dashboard shows one list for whichever provider it picked, so the
+    shape stays the same for both.
+    """
+    chosen = (provider or "elevenlabs").strip().lower()
+    if chosen not in ("elevenlabs", "fish_audio"):
+        raise HTTPException(status_code=400, detail="Unknown voice provider")
+
+    key = x_fish_audio_key if chosen == "fish_audio" else x_elevenlabs_key
+    if key:
         try:
             loop = asyncio.get_event_loop()
             voices = await loop.run_in_executor(
-                None, get_elevenlabs_voices, x_elevenlabs_key
+                None, tts.voices, chosen, key
             )
             if voices:
-                return {"voices": voices, "source": "elevenlabs"}
+                return {
+                    "voices": voices,
+                    "source": chosen,
+                    "models": tts.models(chosen),
+                }
         except Exception:
             pass
+
+    if chosen == "fish_audio":
+        # Fish Audio has no built-in default voice: synthesis needs a voice
+        # the account owns (or a public one). Say so instead of pretending.
+        return {
+            "voices": [],
+            "source": "fish_audio",
+            "models": tts.models(chosen),
+            "detail": "No Fish Audio voices found. Clone a voice at fish.audio, or "
+                      "use the public Voice Library.",
+        }
 
     # Fallback to default voices
     return {
@@ -7317,4 +7493,5 @@ async def saasshorts_voices(
             for name, vid in DEFAULT_VOICES.items()
         ],
         "source": "defaults",
+        "models": tts.models(chosen),
     }

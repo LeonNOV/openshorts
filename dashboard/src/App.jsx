@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { Upload, Sparkles, Youtube, Instagram, Share2, ChevronDown, Check, Activity, LayoutDashboard, Settings, Plus, History, X, Terminal, Shield, LayoutGrid, Image, Globe, RotateCcw, Calendar, AlertTriangle, KeyRound, Bot, Users, Smartphone, ExternalLink, Copy, CheckCircle2, Mail, Loader2, Download, Menu, Lock, Rocket } from 'lucide-react';
-import KeyInput from './components/KeyInput';
+import AiProviderInput from './components/AiProviderInput';
+import SegmentedControl from './components/ui/SegmentedControl';
 import MediaInput from './components/MediaInput';
 import McpConnectCard from './components/McpConnectCard';
 import ResultCard from './components/ResultCard';
@@ -31,6 +32,7 @@ import Modal from './components/ui/Modal';
 import { useAuth } from './contexts/AuthContext';
 import { apiFetch, apiJson, QuotaError, QUOTA_WALL_EVENT } from './lib/api';
 import { track } from './lib/analytics';
+import { FISH_AUDIO_MODELS } from './lib/providers';
 
 // Enhanced "Encryption" using XOR + Base64 with a Salt
 // This is better than plain Base64 but still client-side.
@@ -313,6 +315,31 @@ function App() {
     return '';
   });
 
+  // Which text LLM answers the pipeline's prompts: Gemini or DeepSeek.
+  // DeepSeek replaces Gemini for the text stages (clip picking, titles,
+  // scripts); the frame-based stages still use Gemini when a key is set.
+  const [llmProvider, setLlmProvider] = useState(
+    () => localStorage.getItem('llmProvider_v1') || 'gemini');
+  // DeepSeek API State - Load encrypted
+  const [deepseekKey, setDeepseekKey] = useState(() => {
+    const stored = localStorage.getItem('deepseekKey_v1');
+    if (stored) return decrypt(stored);
+    return '';
+  });
+
+  // Which voice provider synthesizes the narration: ElevenLabs or Fish Audio.
+  const [ttsProvider, setTtsProvider] = useState(
+    () => localStorage.getItem('ttsProvider_v1') || 'elevenlabs');
+  // Fish Audio API State - Load encrypted
+  const [fishAudioKey, setFishAudioKey] = useState(() => {
+    const stored = localStorage.getItem('fishAudioKey_v1');
+    if (stored) return decrypt(stored);
+    return '';
+  });
+  // Fish Audio model id (s2.1-pro, s2.1-pro-free, s2-pro, s1)
+  const [fishAudioModel, setFishAudioModel] = useState(
+    () => localStorage.getItem('fishAudioModel_v1') || 's2.1-pro');
+
   const [uploadUserId, setUploadUserId] = useState(() => localStorage.getItem('uploadUserId') || '');
   const [userProfiles, setUserProfiles] = useState([]); // List of {username, connected: []}
   // Post-generation social nudge: shown at the results peak until the user
@@ -381,6 +408,7 @@ function App() {
   // Silent-success "saved" states for the settings key inputs (design.md: no alert popups)
   const [elevenLabsSaved, setElevenLabsSaved] = useState(false);
   const [falSaved, setFalSaved] = useState(false);
+  const [fishAudioSaved, setFishAudioSaved] = useState(false);
 
   // Sync state for original video playback
   const [syncedTime, setSyncedTime] = useState(0);
@@ -754,6 +782,30 @@ function App() {
   }, [falKey]);
 
   useEffect(() => {
+    localStorage.setItem('llmProvider_v1', llmProvider);
+  }, [llmProvider]);
+
+  useEffect(() => {
+    if (deepseekKey) {
+      localStorage.setItem('deepseekKey_v1', encrypt(deepseekKey));
+    }
+  }, [deepseekKey]);
+
+  useEffect(() => {
+    localStorage.setItem('ttsProvider_v1', ttsProvider);
+  }, [ttsProvider]);
+
+  useEffect(() => {
+    if (fishAudioKey) {
+      localStorage.setItem('fishAudioKey_v1', encrypt(fishAudioKey));
+    }
+  }, [fishAudioKey]);
+
+  useEffect(() => {
+    localStorage.setItem('fishAudioModel_v1', fishAudioModel);
+  }, [fishAudioModel]);
+
+  useEffect(() => {
     if ((uploadPostKey || isManaged) && userProfiles.length === 0) {
       fetchUserProfiles({ silent: true });
     }
@@ -875,7 +927,11 @@ function App() {
   // `keysMissing` now means "self-host BYOK keys missing" — it never fires on hosted.
   // A self-hosted server running the moment picker on a local LLM
   // (LLM_BASE_URL) does not need a Gemini key for the core pipeline.
-  const geminiOk = !!apiKey || !!localLlm;
+  // DeepSeek is the other half of the either/or: with it selected, the
+  // DeepSeek key is what the core pipeline needs, not a Gemini key.
+  const geminiOk = llmProvider === 'deepseek'
+    ? (!!deepseekKey || !!localLlm)
+    : (!!apiKey || !!localLlm);
   const keysMissing = !billingEnabled && (!geminiOk || !uploadPostKey);
   const needsPlan = billingEnabled && !isManaged;   // hosted, signed-out or no active plan/trial
 
@@ -1057,9 +1113,20 @@ function App() {
 
     try {
       let body;
-      // BYOK sends the Gemini header; managed users rely on the bearer token
-      // that apiFetch attaches automatically.
-      const headers = apiKey ? { 'X-Gemini-Key': apiKey } : {};
+      // BYOK sends the provider header; managed users rely on the bearer token
+      // that apiFetch attaches automatically. The selected provider answers
+      // the text stages; the Gemini key still travels along when it is set,
+      // because only Gemini can look at frames (layout picking, screen
+      // detection) and the pipeline degrades without it.
+      const headers = {};
+      if (llmProvider === 'deepseek' && deepseekKey) {
+        headers['X-DeepSeek-Key'] = deepseekKey;
+      } else if (apiKey) {
+        headers['X-Gemini-Key'] = apiKey;
+      }
+      if (llmProvider === 'deepseek' && apiKey) {
+        headers['X-Gemini-Key'] = apiKey; // for the frame-based stages
+      }
 
       // Advanced generation controls: only sent when the user set them, so the
       // default request stays byte-identical to the pre-feature one.
@@ -1637,7 +1704,14 @@ function App() {
                 </div>
               ) : (
                 <>
-              <KeyInput onKeySet={setApiKey} savedKey={apiKey} />
+              <AiProviderInput
+                provider={llmProvider}
+                onProviderChange={setLlmProvider}
+                geminiKey={apiKey}
+                onGeminiKeyChange={setApiKey}
+                deepseekKey={deepseekKey}
+                onDeepseekKeyChange={setDeepseekKey}
+              />
 
               <div className="card p-4 sm:p-6 mt-8">
                 <div className="flex flex-wrap items-center justify-between gap-2 mb-4">
@@ -1704,50 +1778,118 @@ function App() {
                   </div>
                   <span className="readout">BYOK</span>
                 </div>
-                <p className="text-xs text-muted mb-6 leading-relaxed">
+                <p className="text-xs text-muted mb-5 leading-relaxed">
                   For <strong>AI Shorts &amp; dubbing</strong> — bring your own key. Translate your clips to different
-                  languages using <strong>ElevenLabs</strong> AI dubbing (billed by ElevenLabs). Not covered by your plan.
+                  languages with your own voice provider. Not covered by your plan.
                 </p>
-                <div className="space-y-4">
-                  <label className="block text-sm text-muted">ElevenLabs API Key</label>
-                  <div className="flex flex-col sm:flex-row gap-2">
-                    <input
-                      type="password"
-                      value={elevenLabsKey}
-                      onChange={(e) => setElevenLabsKey(e.target.value)}
-                      className="input-field"
-                      placeholder="sk_..."
-                    />
-                    <button
-                      onClick={() => {
-                        if (elevenLabsKey) {
-                          localStorage.setItem('elevenLabsKey_v1', encrypt(elevenLabsKey));
-                          setElevenLabsSaved(true);
-                          setTimeout(() => setElevenLabsSaved(false), 2000);
-                        }
-                      }}
-                      className={elevenLabsSaved ? 'badge-ok px-4' : 'btn-quiet py-2 px-4 text-sm'}
-                    >
-                      {elevenLabsSaved ? <><Check size={12} /> saved</> : 'Save'}
-                    </button>
-                  </div>
-                  <div className="text-xs text-muted leading-relaxed">
-                    Get your API key from ElevenLabs to enable video translation.
-                    <div className="mt-3 grid grid-cols-1 sm:grid-cols-2 gap-2">
-                      <a href="https://elevenlabs.io/sign-up" target="_blank" rel="noopener noreferrer" className="p-2 border border-rule rounded-input hover:bg-paper3 transition-colors flex flex-col gap-1">
-                        <span className="text-ink2 font-medium">1. Sign Up</span>
-                        <span className="text-xs text-muted">Create account</span>
-                      </a>
-                      <a href="https://elevenlabs.io/app/settings/api-keys" target="_blank" rel="noopener noreferrer" className="p-2 border border-rule rounded-input hover:bg-paper3 transition-colors flex flex-col gap-1">
-                        <span className="text-ink2 font-medium">2. API Key</span>
-                        <span className="text-xs text-muted">Generate key</span>
-                      </a>
+
+                {/* Voice provider: either/or. The key that belongs to the
+                    selected provider is the one that gets used. */}
+                <label className="eyebrow block mb-2">Voice provider</label>
+                <SegmentedControl
+                  options={[
+                    { value: 'elevenlabs', label: 'ElevenLabs', hint: 'dubbing api' },
+                    { value: 'fish_audio', label: 'Fish Audio', hint: 'voice models' },
+                  ]}
+                  value={ttsProvider}
+                  onChange={setTtsProvider}
+                  columns={2}
+                  className="mb-5"
+                />
+
+                {ttsProvider === 'fish_audio' ? (
+                  <div className="space-y-4">
+                    <div>
+                      <label className="block text-sm text-muted mb-2">Fish Audio API Key</label>
+                      <div className="flex flex-col sm:flex-row gap-2">
+                        <input
+                          type="password"
+                          value={fishAudioKey}
+                          onChange={(e) => setFishAudioKey(e.target.value)}
+                          className="input-field"
+                          placeholder="sk_..."
+                        />
+                        <button
+                          onClick={() => {
+                            if (fishAudioKey) {
+                              localStorage.setItem('fishAudioKey_v1', encrypt(fishAudioKey));
+                              setFishAudioSaved(true);
+                              setTimeout(() => setFishAudioSaved(false), 2000);
+                            }
+                          }}
+                          className={fishAudioSaved ? 'badge-ok px-4' : 'btn-quiet py-2 px-4 text-sm'}
+                        >
+                          {fishAudioSaved ? <><Check size={12} /> saved</> : 'Save'}
+                        </button>
+                      </div>
                     </div>
-                    <br />
-                    <span className="text-muted">
-                      Keys are only stored in your browser. They are sent to the backend only to process your request, never stored server-side.
-                    </span>
+                    <div>
+                      <label className="block text-sm text-muted mb-2">Fish Audio model</label>
+                      <select
+                        value={fishAudioModel}
+                        onChange={(e) => setFishAudioModel(e.target.value)}
+                        className="input-field appearance-none cursor-pointer"
+                      >
+                        {FISH_AUDIO_MODELS.map((m) => (
+                          <option key={m.id} value={m.id}>{m.label} — {m.hint}</option>
+                        ))}
+                      </select>
+                    </div>
+                    <div className="text-xs text-muted leading-relaxed">
+                      Get your API key from Fish Audio to enable dubbing.
+                      <div className="mt-3 grid grid-cols-1 sm:grid-cols-2 gap-2">
+                        <a href="https://fish.audio/app/api-keys" target="_blank" rel="noopener noreferrer" className="p-2 border border-rule rounded-input hover:bg-paper3 transition-colors flex flex-col gap-1">
+                          <span className="ink2 font-medium text-ink">1. Sign Up</span>
+                          <span className="text-xs text-muted">Create account</span>
+                        </a>
+                        <a href="https://fish.audio/app/api-keys" target="_blank" rel="noopener noreferrer" className="p-2 border border-rule rounded-input hover:bg-paper3 transition-colors flex flex-col gap-1">
+                          <span className="ink2 font-medium text-ink">2. API Key</span>
+                          <span className="text-xs text-muted">Generate key</span>
+                        </a>
+                      </div>
+                    </div>
                   </div>
+                ) : (
+                  <div className="space-y-4">
+                    <label className="block text-sm text-muted">ElevenLabs API Key</label>
+                    <div className="flex flex-col sm:flex-row gap-2">
+                      <input
+                        type="password"
+                        value={elevenLabsKey}
+                        onChange={(e) => setElevenLabsKey(e.target.value)}
+                        className="input-field"
+                        placeholder="sk_..."
+                      />
+                      <button
+                        onClick={() => {
+                          if (elevenLabsKey) {
+                            localStorage.setItem('elevenLabsKey_v1', encrypt(elevenLabsKey));
+                            setElevenLabsSaved(true);
+                            setTimeout(() => setElevenLabsSaved(false), 2000);
+                          }
+                        }}
+                        className={elevenLabsSaved ? 'badge-ok px-4' : 'btn-quiet py-2 px-4 text-sm'}
+                      >
+                        {elevenLabsSaved ? <><Check size={12} /> saved</> : 'Save'}
+                      </button>
+                    </div>
+                    <div className="text-xs text-muted leading-relaxed">
+                      Get your API key from ElevenLabs to enable video translation.
+                      <div className="mt-3 grid grid-cols-1 sm:grid-cols-2 gap-2">
+                        <a href="https://elevenlabs.io/sign-up" target="_blank" rel="noopener noreferrer" className="p-2 border border-rule rounded-input hover:bg-paper3 transition-colors flex flex-col gap-1">
+                          <span className="text-ink2 font-medium">1. Sign Up</span>
+                          <span className="text-xs text-muted">Create account</span>
+                        </a>
+                        <a href="https://elevenlabs.io/app/settings/api-keys" target="_blank" rel="noopener noreferrer" className="p-2 border border-rule rounded-input hover:bg-paper3 transition-colors flex flex-col gap-1">
+                          <span className="text-ink2 font-medium">2. API Key</span>
+                          <span className="text-xs text-muted">Generate key</span>
+                        </a>
+                      </div>
+                    </div>
+                  </div>
+                )}
+                <div className="text-xs text-muted leading-relaxed mt-4">
+                  Keys are only stored in your browser. They are sent to the backend only to process your request, never stored server-side.
                 </div>
               </div>
 
@@ -1813,7 +1955,7 @@ function App() {
 
           {/* View: SaaS Shorts */}
           {activeTab === 'saasshorts' && (
-            <SaaShortsTab geminiApiKey={apiKey} elevenLabsKey={elevenLabsKey} falKey={falKey} uploadPostKey={uploadPostKey} uploadUserId={uploadUserId} managed={isManaged} />
+            <SaaShortsTab geminiApiKey={apiKey} elevenLabsKey={elevenLabsKey} falKey={falKey} uploadPostKey={uploadPostKey} uploadUserId={uploadUserId} managed={isManaged} ttsProvider={ttsProvider} fishAudioKey={fishAudioKey} fishAudioModel={fishAudioModel} onFishAudioModelChange={setFishAudioModel} llmProvider={llmProvider} deepseekKey={deepseekKey} />
           )}
 
           {/* View: AI Agent */}
@@ -2310,6 +2452,9 @@ function App() {
                           uploadUserId={uploadUserId}
                           geminiApiKey={apiKey}
                           elevenLabsKey={elevenLabsKey}
+                          ttsProvider={ttsProvider}
+                          fishAudioKey={fishAudioKey}
+                          fishAudioModel={fishAudioModel}
                           isManaged={isManaged}
                           connectedPlatforms={(userProfiles.find((p) => p.username === uploadUserId) || userProfiles[0])?.connected ?? null}
                           onConnectSocials={isManaged ? handleConnectSocials : null}
