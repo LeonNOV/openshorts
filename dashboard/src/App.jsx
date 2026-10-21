@@ -929,10 +929,19 @@ function App() {
   // (LLM_BASE_URL) does not need a Gemini key for the core pipeline.
   // DeepSeek is the other half of the either/or: with it selected, the
   // DeepSeek key is what the core pipeline needs, not a Gemini key.
-  const geminiOk = llmProvider === 'deepseek'
+  //
+  // Only the text LLM gates the pipeline. Upload-Post is NOT part of it:
+  // that key is for publishing to social platforms, and a local-only user
+  // never needs one. Every publishing surface already says so where it is
+  // used (the publish button, the schedule modal, the YouTube publish panel),
+  // so making it a global gate would lock out people who only want the
+  // video files.
+  const llmOk = llmProvider === 'deepseek'
     ? (!!deepseekKey || !!localLlm)
     : (!!apiKey || !!localLlm);
-  const keysMissing = !billingEnabled && (!geminiOk || !uploadPostKey);
+  const keysMissing = !billingEnabled && !llmOk;
+  // Publishing to social platforms needs this key; generating a video does not.
+  const publishKeyMissing = !isManaged && !uploadPostKey;
   const needsPlan = billingEnabled && !isManaged;   // hosted, signed-out or no active plan/trial
 
   // Fresh sign-up: Clip Generator tutorial (AuthContext set os_show_clip_tutorial
@@ -1580,11 +1589,9 @@ function App() {
               >
                 <AlertTriangle size={12} />
                 <span className="hidden md:inline">
-                  {!geminiOk && !uploadPostKey
-                    ? 'Gemini & Upload-Post keys missing'
-                    : !geminiOk
-                      ? 'Gemini API Key Missing'
-                      : 'Upload-Post API Key Missing'}
+                  {llmProvider === 'deepseek'
+                    ? 'DeepSeek API Key Missing'
+                    : 'Gemini API Key Missing'}
                 </span>
                 <span className="md:hidden">keys missing</span>
               </button>
@@ -1600,11 +1607,9 @@ function App() {
               <div className="min-w-0">
                 <span className="font-medium text-ink">Required API keys missing.</span>{' '}
                 <span className="text-muted">
-                  {!geminiOk && !uploadPostKey
-                    ? 'Set your Gemini and Upload-Post API keys to use OpenShorts.'
-                    : !geminiOk
-                      ? 'Set your Gemini API key to use OpenShorts.'
-                      : 'Set your Upload-Post API key to use OpenShorts.'}
+                  {llmProvider === 'deepseek'
+                    ? 'Set your DeepSeek API key to use OpenShorts.'
+                    : 'Set your Gemini API key to use OpenShorts.'}
                 </span>
               </div>
             </div>
@@ -1721,10 +1726,11 @@ function App() {
                     </div>
                     <h2 className="text-base font-medium text-ink lowercase">Social Integration</h2>
                   </div>
-                  <span className="badge-warn">Required</span>
+                  <span className="badge-warn">Optional</span>
                 </div>
                 <p className="text-xs text-muted mb-6 leading-relaxed">
-                  Required to publish your clips to TikTok, Instagram Reels, and YouTube Shorts via <strong>Upload-Post</strong>.
+                  Only needed to publish your clips to TikTok, Instagram Reels, and YouTube Shorts via <strong>Upload-Post</strong>.
+                  Generating and downloading videos works without it — leave this empty if you keep everything local.
                   Includes a <strong>free tier</strong> (no credit card required).
                 </p>
                 <div className="space-y-4">
@@ -1737,7 +1743,12 @@ function App() {
                       className="input-field"
                       placeholder="ey..."
                     />
-                    <button onClick={fetchUserProfiles} className="btn-quiet py-2 px-4 text-sm">
+                    <button
+                      onClick={fetchUserProfiles}
+                      disabled={publishKeyMissing}
+                      title={publishKeyMissing ? 'Add your Upload-Post API key first' : 'Fetch your Upload-Post profiles'}
+                      className="btn-quiet py-2 px-4 text-sm disabled:opacity-50 disabled:cursor-not-allowed"
+                    >
                       Connect
                     </button>
                   </div>
@@ -2495,16 +2506,15 @@ function App() {
 
       </main>
 
-      {/* Missing API Key Modal */}
+      {/* Missing API Key Modal — the text LLM only. The Upload-Post key is
+          for publishing, not for generating, so it never blocks the pipeline. */}
       <Modal
         isOpen={showKeyModal}
         onClose={() => setShowKeyModal(false)}
         eyebrow="SETUP"
-        title={!geminiOk && !uploadPostKey
-          ? 'Required API Keys Missing'
-          : !geminiOk
-            ? 'Gemini API Key Required'
-            : 'Upload-Post API Key Required'}
+        title={llmProvider === 'deepseek'
+          ? 'DeepSeek API Key Required'
+          : 'Gemini API Key Required'}
         footer={
           <div className="flex gap-3">
             <button
@@ -2524,16 +2534,41 @@ function App() {
       >
         <div className="space-y-4">
           <p className="text-sm text-muted">
-            OpenShorts needs both a <strong className="text-ink2">Gemini</strong> API key and an <strong className="text-ink2">Upload-Post</strong> API key. Both have free tiers.
+            {llmProvider === 'deepseek' ? (
+              <>OpenShorts needs a <strong className="text-ink2">DeepSeek</strong> API key to pick the clips and write the titles. It has a free tier.</>
+            ) : (
+              <>OpenShorts needs a <strong className="text-ink2">Gemini</strong> API key to pick the clips and write the titles. It has a free tier.</>
+            )}
           </p>
 
-          {/* Gemini block */}
-          <div className={`rounded-input p-4 space-y-2 border ${!apiKey ? 'border-rule2' : 'border-rule opacity-70'}`}>
+          {/* The selected text model */}
+          <div className={`rounded-input p-4 space-y-2 border ${!llmOk ? 'border-rule2' : 'border-rule opacity-70'}`}>
             <p className="text-xs font-medium text-ink flex items-center gap-2">
-              {apiKey ? <Check size={12} className="text-ok" /> : <AlertTriangle size={12} className="text-warn" />}
-              Gemini API Key {apiKey && <span className="text-ok">— set</span>}
+              {llmOk ? <Check size={12} className="text-ok" /> : <AlertTriangle size={12} className="text-warn" />}
+              {llmProvider === 'deepseek' ? 'DeepSeek API Key' : 'Gemini API Key'}{' '}
+              {llmOk && <span className="text-ok">— set</span>}
             </p>
-            {!apiKey && (
+            {!llmOk && llmProvider === 'deepseek' && (
+              <>
+                <ol className="text-xs text-muted space-y-1 list-decimal list-inside">
+                  <li>Go to <a href="https://platform.deepseek.com/api_keys" target="_blank" rel="noopener noreferrer" className="text-brass underline">platform.deepseek.com/api_keys</a></li>
+                  <li>Sign in with your account</li>
+                  <li>Click "Create API Key"</li>
+                  <li>Copy the key and paste it below</li>
+                </ol>
+                <input
+                  type="text"
+                  placeholder="Paste your DeepSeek API key here..."
+                  className="input-field"
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' && e.target.value.trim()) {
+                      setDeepseekKey(e.target.value.trim());
+                    }
+                  }}
+                />
+              </>
+            )}
+            {!llmOk && llmProvider !== 'deepseek' && (
               <>
                 <ol className="text-xs text-muted space-y-1 list-decimal list-inside">
                   <li>Go to <a href="https://aistudio.google.com/app/apikey" target="_blank" rel="noopener noreferrer" className="text-brass underline">aistudio.google.com/app/apikey</a></li>
@@ -2555,36 +2590,11 @@ function App() {
             )}
           </div>
 
-          {/* Upload-Post block */}
-          <div className={`rounded-input p-4 space-y-2 border ${!uploadPostKey ? 'border-rule2' : 'border-rule opacity-70'}`}>
-            <p className="text-xs font-medium text-ink flex items-center gap-2">
-              {uploadPostKey ? <Check size={12} className="text-ok" /> : <AlertTriangle size={12} className="text-warn" />}
-              Upload-Post API Key {uploadPostKey && <span className="text-ok">— set</span>}
-            </p>
-            {!uploadPostKey && (
-              <>
-                <p className="text-xs text-muted">
-                  Required to publish your clips to TikTok, Instagram Reels, and YouTube Shorts. Free tier available, no credit card needed.
-                </p>
-                <ol className="text-xs text-muted space-y-1 list-decimal list-inside">
-                  <li>Register at <a href="https://app.upload-post.com/login" target="_blank" rel="noopener noreferrer" className="text-brass underline">app.upload-post.com</a></li>
-                  <li>Connect your TikTok, Instagram, or YouTube accounts</li>
-                  <li>Go to <a href="https://app.upload-post.com/api-keys" target="_blank" rel="noopener noreferrer" className="text-brass underline">API Keys</a> and generate one</li>
-                  <li>Paste it below</li>
-                </ol>
-                <input
-                  type="text"
-                  placeholder="Paste your Upload-Post API key here..."
-                  className="input-field"
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter' && e.target.value.trim()) {
-                      setUploadPostKey(e.target.value.trim());
-                    }
-                  }}
-                />
-              </>
-            )}
-          </div>
+          <p className="text-xs text-muted leading-relaxed">
+            Publishing to TikTok, Instagram and YouTube needs an Upload-Post key,
+            but that is optional — set it in Settings only if you want to post
+            from here. Everything else works without it.
+          </p>
         </div>
       </Modal>
 

@@ -78,6 +78,7 @@ Ingest (yt-dlp or upload) → transcription (word timestamps) → scene detectio
 - The two keys never share a slot. `DEEPSEEK_API_KEY` and `GEMINI_API_KEY` are separate variables in the child environment; a DeepSeek key in `GEMINI_API_KEY` would make the frame-based stages fail with a Google auth error instead of degrading.
 - A Gemini request must clear `LLM_PROVIDER` and `DEEPSEEK_API_KEY` from the child environment, or a stale server key answers a job that asked for Gemini.
 - A Fish Audio dub replaces the original audio; it does not mix two voices over each other. It needs the clip's transcript — Fish Audio speaks text, it cannot transcribe a video.
+- **Only the text LLM gates the pipeline.** The Upload-Post key is for publishing to social platforms, so it must never block generation: `keysMissing` covers the text model's key and nothing else. A local-only user never sets an Upload-Post key, and every publishing surface already says so where it is used. The backend agrees — `/api/process` never asks for it; only the posting endpoints do.
 
 **Jobs, GPU, deploys**
 - Call `transcribe_backends.release_models()` after any ASR (job processes and in-API transcriptions alike). Size `MAX_CONCURRENT_JOBS` by free VRAM first.

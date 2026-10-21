@@ -175,3 +175,10 @@ either/or: a request sends the key of the voice provider the user picked and
 only that one. The text models are not: `X-DeepSeek-Key` and `X-Gemini-Key`
 are sent together when both are set, because DeepSeek answers the text stages
 while Gemini is still the only one that can read frames.
+
+**Only the text LLM gates the pipeline.** `keysMissing` is the text model's key
+and nothing else. The Upload-Post key is for publishing to social platforms, so
+it must never gate generation: a local-only user never sets one, and every
+publishing surface (the post button, the schedule modal, the YouTube publish
+panel) already says so where it is used. The backend agrees — `/api/process`
+never asks for it; only the posting endpoints do.
