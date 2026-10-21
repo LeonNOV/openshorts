@@ -18,7 +18,13 @@ import math
 import numpy as np
 from tqdm import tqdm
 import yt_dlp
-import mediapipe as mp
+try:
+    import mediapipe as mp
+except ImportError:
+    # Optional: the pipeline frames on the YOLO person detector instead (see
+    # the face-detector setup below). A missing mediapipe must not kill the
+    # job at import time.
+    mp = None
 # import whisper (replaced by faster_whisper inside function)
 from google import genai
 from google.genai import types as genai_types
@@ -92,9 +98,27 @@ OUTPUT — RETURN ONLY VALID JSON (no markdown, no comments). Order clips by pre
 model = YOLO(os.environ.get("YOLO_MODEL_PATH", "yolov8n.pt"))
 
 # --- MediaPipe Setup ---
-# Use standard Face Detection (BlazeFace) for speed
-mp_face_detection = mp.solutions.face_detection
-face_detection = mp_face_detection.FaceDetection(model_selection=1, min_detection_confidence=0.5)
+# Use standard Face Detection (BlazeFace) for speed.
+#
+# The legacy `mp.solutions` API was removed in mediapipe 0.10.30, and PyPI
+# publishes nothing between 0.10.21 and 0.10.30 — so the last mediapipe with
+# this API (0.10.21) has no wheel for Python 3.13, while every mediapipe that
+# does install on 3.13 (0.10.30+) has dropped it. The face detector is
+# therefore optional here: without it the framing falls back to the YOLO
+# person detector, which is coarser (a person's box instead of a face box)
+# but keeps the pipeline working. mediapipe==0.10.14 on Python <= 3.12 — what
+# the Docker image and CI use — gives the precise face boxes.
+try:
+    mp_face_detection = mp.solutions.face_detection
+    face_detection = mp_face_detection.FaceDetection(model_selection=1, min_detection_confidence=0.5)
+    FACE_DETECTION_AVAILABLE = True
+except (AttributeError, ImportError) as e:
+    face_detection = None
+    FACE_DETECTION_AVAILABLE = False
+    print("⚠️ MediaPipe face detection unavailable "
+          f"({type(e).__name__}: {e}).")
+    print("   Framing falls back to YOLO person detection — coarser, but it works.")
+    print("   For the precise face boxes: use Python <= 3.12 with mediapipe==0.10.14.")
 
 # Consecutive detections a large target move must survive before the camera
 # follows it (see SmoothedCameraman.update_target). Env-overridable so the
@@ -417,6 +441,10 @@ DETECT_LOCK = threading.Lock()
 DETECT_STRIDE = max(int(os.environ.get("DETECT_STRIDE", "4")), 1)
 # YOLO fallback (no face found) is far heavier than MediaPipe — extra throttle.
 YOLO_FALLBACK_STRIDE = DETECT_STRIDE * 2
+# Without a face detector the person box is the *primary* signal, not a
+# fallback, so it runs at the normal stride instead of the halved one —
+# otherwise the framing would update half as often as it used to.
+PERSON_STRIDE = DETECT_STRIDE if not FACE_DETECTION_AVAILABLE else YOLO_FALLBACK_STRIDE
 
 
 def _detection_frame(frame):
@@ -436,7 +464,12 @@ def detect_face_candidates(frame):
     Returns list of all detected faces using lightweight FaceDetection.
     Boxes are in ORIGINAL frame coordinates (detection runs downscaled;
     MediaPipe's relative coords make the mapping exact).
+
+    Empty when MediaPipe's face detection is unavailable — the caller then
+    falls back to the YOLO person detector.
     """
+    if face_detection is None:
+        return []
     height, width, _ = frame.shape
     small, _scale = _detection_frame(frame)
     rgb_frame = cv2.cvtColor(small, cv2.COLOR_BGR2RGB)
@@ -1703,7 +1736,7 @@ def process_video_to_vertical(input_video, final_output_video, aspect_ratio=ASPE
                     target_box = speaker_tracker.get_target(candidates, frame_number, original_width)
                     if target_box:
                         cameraman.update_target(target_box)
-                    elif frame_number % YOLO_FALLBACK_STRIDE == 0 or (is_scene_start and SCENE_CUT_RESET):
+                    elif frame_number % PERSON_STRIDE == 0 or (is_scene_start and SCENE_CUT_RESET):
                         person_box = detect_person_yolo(frame)
                         if person_box:
                             cameraman.update_target(person_box)

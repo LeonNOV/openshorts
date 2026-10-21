@@ -167,14 +167,26 @@ _DETECTOR_LOCK = threading.Lock()
 
 
 def _detector():
+    """The MediaPipe face detector, or None when it is unavailable.
+
+    The legacy `mp.solutions` API was removed in mediapipe 0.10.30, and the
+    last release with it (0.10.21) has no Python 3.13 wheel — so on a 3.13
+    install there is no mediapipe with this API at all. The caller then keeps
+    the old hook spot instead of failing the job.
+    """
     global _DETECTOR
     if _DETECTOR is None:
-        import mediapipe as mp
-        # model_selection=1: the full-range model, so the small faces of a
-        # GENERAL (blurred-backdrop) layout are found too.
-        _DETECTOR = mp.solutions.face_detection.FaceDetection(
-            model_selection=1, min_detection_confidence=0.5)
-    return _DETECTOR
+        try:
+            import mediapipe as mp
+            # model_selection=1: the full-range model, so the small faces of a
+            # GENERAL (blurred-backdrop) layout are found too.
+            _DETECTOR = mp.solutions.face_detection.FaceDetection(
+                model_selection=1, min_detection_confidence=0.5)
+        except (ImportError, AttributeError) as e:
+            print(f"⚠️ Hook placement: MediaPipe face detection unavailable "
+                  f"({type(e).__name__}: {e}); keeping the old hook spot.")
+            _DETECTOR = False
+    return _DETECTOR or None
 
 
 def detect_faces(video_path, window_start=0.0, window_end=None, samples=SAMPLES):
@@ -204,6 +216,8 @@ def detect_faces(video_path, window_start=0.0, window_end=None, samples=SAMPLES)
         frames = []
         with _DETECTOR_LOCK:
             detector = _detector()
+            if detector is None:
+                return None
             for frame in read_at(cap, indices):
                 if frame is None:
                     continue

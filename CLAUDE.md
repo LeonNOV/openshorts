@@ -80,6 +80,11 @@ Ingest (yt-dlp or upload) → transcription (word timestamps) → scene detectio
 - A Fish Audio dub replaces the original audio; it does not mix two voices over each other. It needs the clip's transcript — Fish Audio speaks text, it cannot transcribe a video.
 - **Only the text LLM gates the pipeline.** The Upload-Post key is for publishing to social platforms, so it must never block generation: `keysMissing` covers the text model's key and nothing else. A local-only user never sets an Upload-Post key, and every publishing surface already says so where it is used. The backend agrees — `/api/process` never asks for it; only the posting endpoints do.
 
+**Face detection**
+- The MediaPipe face detector is optional and must never be able to kill a job. MediaPipe's legacy `mp.solutions` API was removed in 0.10.30 and PyPI publishes nothing between 0.10.21 and 0.10.30, so there is no mediapipe with that API for Python 3.13 — importing `main.py` must not raise.
+- Without a face detector, the YOLO person detector is the *primary* signal, not a fallback: it runs at `DETECT_STRIDE` (`PERSON_STRIDE`), not the throttled `YOLO_FALLBACK_STRIDE`. `reframe_v2` reads the same stride through `_person_stride(m)`.
+- A job that cannot detect faces keeps the old hook spot (`hook_placement.detect_faces` returns None) instead of failing.
+
 **Jobs, GPU, deploys**
 - Call `transcribe_backends.release_models()` after any ASR (job processes and in-API transcriptions alike). Size `MAX_CONCURRENT_JOBS` by free VRAM first.
 - `DRAIN_TIMEOUT_SECONDS` must stay below the deployment's (Coolify) stop grace period. The image must ship `curl` for the platform health check.

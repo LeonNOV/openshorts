@@ -9,7 +9,14 @@ faster-whisper==1.2.1
 py3langid==0.3.0
 google-genai==1.75.0
 python-dotenv==1.2.2
-mediapipe==0.10.14
+# MediaPipe's legacy `mp.solutions` face-detection API was removed in 0.10.30,
+# and PyPI publishes nothing between 0.10.21 and 0.10.30 — so the last release
+# with that API has no Python 3.13 wheel, while every mediapipe that does
+# install on 3.13 has dropped it. On 3.13 the newer mediapipe installs and the
+# pipeline falls back to YOLO person detection (coarser, but it works); on 3.12
+# and below the pinned version gives the precise face boxes.
+mediapipe==0.10.14; python_version < "3.13"
+mediapipe>=0.10.30; python_version >= "3.13"
 boto3==1.43.4
 
 fastapi==0.136.1

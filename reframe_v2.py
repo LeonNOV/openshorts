@@ -287,6 +287,17 @@ def _walk_scenes(scenes_boundaries, scene_strategies, n_frames):
         yield frame_number, current, strategy
 
 
+def _person_stride(m):
+    """How often the YOLO person detector runs.
+
+    Normally it is the fallback for "no face found", so it is throttled to
+    half the face detector's rate. Without a face detector at all (mediapipe
+    has no ``solutions`` API on Python 3.13) it is the primary signal, and
+    runs at the normal stride instead.
+    """
+    return getattr(m, "PERSON_STRIDE", m.YOLO_FALLBACK_STRIDE)
+
+
 def _detection_frames(scenes_boundaries, scene_strategies, n_frames, stride,
                       cut_reset):
     """Frame numbers the trajectory loop hands a detector, in order.
@@ -381,7 +392,7 @@ def _trajectory_loop(next_frame, sparse, n_frames, scenes_boundaries,
                 target_box = tracker.get_target(candidates, frame_number, orig_w)
                 if target_box:
                     cameraman.update_target(target_box)
-                elif frame_number % m.YOLO_FALLBACK_STRIDE == 0 or cut:
+                elif frame_number % _person_stride(m) == 0 or cut:
                     person_box = m.detect_person_yolo(frame)
                     if person_box:
                         cameraman.update_target([int(v * scale) for v in person_box])

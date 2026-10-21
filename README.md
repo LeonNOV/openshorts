@@ -207,6 +207,13 @@ git clone https://github.com/mutonby/openshorts.git
 cd openshorts
 ```
 
+> **Running outside Docker?** Use **Python 3.12 or lower**. MediaPipe's face
+> detector — the precise face boxes the layout picker frames on — lives in the
+> legacy `mp.solutions` API, which was removed in mediapipe 0.10.30, and the
+> last release with it has no Python 3.13 wheel. On 3.13 the pipeline still
+> runs: it falls back to YOLO person detection, which frames on a person's box
+> instead of a face box, so the result is coarser.
+
 ### 2. Configure (optional)
 ```bash
 cp .env.example .env
