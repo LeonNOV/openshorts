@@ -455,6 +455,8 @@ lives in [`examples/n8n/`](examples/n8n/).
 | `LLM_PROVIDER` | Force a provider: `gemini`, `deepseek` or `openai` (a local compatible server) |
 | `TTS_PROVIDER` | Force a voice provider: `elevenlabs` (default) or `fish_audio` |
 | `FISH_AUDIO_MODEL` | Fish Audio model for the voiceover (default `s2.1-pro`) |
+| `HF_ENDPOINT` | HuggingFace mirror for the Whisper model download. Set it when huggingface.co is unreachable (a proxy that 502s, or a blocked network) — `https://hf-mirror.com` works |
+| `HF_HUB_DISABLE_XET` | Set to `1` with a mirror: the mirror does not proxy `cas-server.xethub.hf.co`, so the Xet backend answers 401 |
 
 **Client-side (encrypted in localStorage):**
 | Key | Description |
