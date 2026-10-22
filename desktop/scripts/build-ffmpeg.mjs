@@ -115,6 +115,10 @@ for (const url of urls) {
     if (!ff) throw new Error('ffmpeg not found in the archive');
     install(ff, path.join(binDir, isWin ? 'ffmpeg.exe' : 'ffmpeg'));
     installed++;
+    // The Windows archive (gyan.dev) ships BOTH binaries — take ffprobe from
+    // the same extraction rather than fetching it again.
+    const fp = findExe(workDir, 'ffprobe');
+    if (fp) install(fp, path.join(binDir, isWin ? 'ffprobe.exe' : 'ffprobe'));
     break;
   } catch (e) {
     console.warn(`[build-ffmpeg] ${url} failed: ${e.message}`);
@@ -122,7 +126,7 @@ for (const url of urls) {
 }
 if (!installed) throw new Error('[build-ffmpeg] could not obtain ffmpeg from any source');
 
-if (separateProbe) {
+if (separateProbe && !fs.existsSync(path.join(binDir, 'ffprobe'))) {
   let ok = false;
   for (const url of probeUrls) {
     const zip = path.join(workDir, 'ffprobe.zip');

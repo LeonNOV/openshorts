@@ -48,8 +48,9 @@ module.exports = {
   },
   win: {
     target: [{ target: 'nsis', arch: 'x64' }],
-    // No Authenticode signature (plan §11). Users click "More info → Run anyway".
-    signed: false,
+    // No Authenticode signature (plan §11): simply provide no certificate —
+    // electron-builder then leaves the exe unsigned and the user clicks
+    // "More info → Run anyway". There is no `signed` option in its schema.
   },
   nsis: {
     oneClick: false,
