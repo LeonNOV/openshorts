@@ -1,7 +1,10 @@
 # DW-shorts 桌面应用 · 实施方案
 
 > 分支：`dw-shorts-dev`（从 `dw-dev` 切出，基线 `1ea9774`）
-> 状态：**P0 启动中** — 本地代码改造（§5.1/§5.2/§4.1）已落地；macOS arm64 本机 headless 出片离线验证 **PASS**（2026-10-22）；Windows x64 待 CI `p0-desktop-verify` 跑通
+> 状态：**P0 完成（本机 macOS arm64 离线 headless 出片 PASS），P1/P2 脚手架已落地待 CI 验证**
+> - P0 代码改造（§5.1 `desktop_runtime.py` + app.py/main.py 接入、§5.2 数据目录、§4.1 `scripts/prefetch_models.py`）已提交 `dec4634`。
+> - P0 离线验证脚本 `scripts/p0_offline_smoke.py` + 单测 `tests/test_desktop_runtime.py`：本机 PASS；复现 CI `p0-desktop-verify.yml`（macos-14 / windows-2022）已建。
+> - P1/P2 脚手架（`desktop/`：package.json、electron main/preload/builder-config、build-python/build-ffmpeg/verify-bundle 脚本）已编写并通过 JS 语法检查，构建/验证在对应平台 CI 跑通（本机仅 macOS，无法跑 electron-builder）。
 
 ---
 
