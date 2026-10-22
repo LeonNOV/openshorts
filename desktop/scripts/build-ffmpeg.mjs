@@ -29,6 +29,29 @@ fs.mkdirSync(binDir, { recursive: true });
 const isWin = process.platform === 'win32';
 const arch = process.arch;
 
+const ffName = isWin ? 'ffmpeg.exe' : 'ffmpeg';
+const fpName = isWin ? 'ffprobe.exe' : 'ffprobe';
+
+/**
+ * Reuse the binaries already in resources/bin when they work.
+ *
+ * The download is 21 MB from a third-party CDN that is often slow, and a
+ * rebuild does not need a new ffmpeg. Pass --force to fetch it again.
+ */
+function existingBinaries() {
+  if (process.argv.includes('--force')) return null;
+  const ff = path.join(binDir, ffName);
+  const fp = path.join(binDir, fpName);
+  if (!fs.existsSync(ff) || !fs.existsSync(fp)) return null;
+  try {
+    execFileSync(ff, ['-version'], { stdio: 'ignore' });
+    execFileSync(fp, ['-version'], { stdio: 'ignore' });
+  } catch {
+    return null;   // present but broken — download a fresh one
+  }
+  return { ff, fp };
+}
+
 // Candidate sources, most preferred first.
 const macUrls = [
   'https://www.osxexperts.net/ffmpeg80arm.zip',
@@ -52,6 +75,15 @@ const probeUrls = isWin
 const urls = isWin ? winUrls : macUrls;
 const workDir = path.join(binDir, '.download');
 fs.mkdirSync(workDir, { recursive: true });
+
+const existing = existingBinaries();
+if (existing) {
+  console.log(`[build-ffmpeg] already present and working -> ${binDir}`);
+  console.log(`[build-ffmpeg] ${existing.ff} -version`);
+  execFileSync(existing.ff, ['-version'], { stdio: 'inherit' });
+  console.log('[build-ffmpeg] DONE ->', binDir);
+  process.exit(0);
+}
 
 function download(url, dest) {
   console.log(`[build-ffmpeg] downloading ${url}`);
@@ -113,7 +145,7 @@ for (const url of urls) {
     extractZip(zip, workDir);
     const ff = findExe(workDir, 'ffmpeg');
     if (!ff) throw new Error('ffmpeg not found in the archive');
-    install(ff, path.join(binDir, isWin ? 'ffmpeg.exe' : 'ffmpeg'));
+    install(ff, path.join(binDir, ffName));
     installed++;
     // The Windows archive (gyan.dev) ships BOTH binaries — take ffprobe from
     // the same extraction rather than fetching it again.
@@ -135,7 +167,7 @@ if (separateProbe && !fs.existsSync(path.join(binDir, 'ffprobe'))) {
       extractZip(zip, workDir);
       const fp = findExe(workDir, 'ffprobe');
       if (!fp) throw new Error('ffprobe not found in the archive');
-      install(fp, path.join(binDir, 'ffprobe'));
+      install(fp, path.join(binDir, fpName));
       ok = true;
       break;
     } catch (e) {
@@ -152,10 +184,8 @@ for (const f of fs.readdirSync(binDir)) {
 }
 fs.rmSync(workDir, { recursive: true, force: true });
 
-const ff = isWin ? 'ffmpeg.exe' : 'ffmpeg';
-const fp = isWin ? 'ffprobe.exe' : 'ffprobe';
 console.log('[build-ffmpeg] versions:');
-execFileSync(path.join(binDir, ff), ['-version'], { stdio: 'inherit' });
-execFileSync(path.join(binDir, fp), ['-version'], { stdio: 'inherit' });
+execFileSync(path.join(binDir, ffName), ['-version'], { stdio: 'inherit' });
+execFileSync(path.join(binDir, fpName), ['-version'], { stdio: 'inherit' });
 console.log('[build-ffmpeg] DONE ->', binDir);
 void arch;

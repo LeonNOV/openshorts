@@ -24,12 +24,24 @@ AI 选片与配音仍需用户自带 API key（Gemini / DeepSeek / ElevenLabs / 
 
 ---
 
-## 2. 产物
+## 2. 产物与打包
 
-| 平台 | 产物 | 来源 |
+| 平台 | 产物 | 打包命令 |
 |---|---|---|
-| macOS | `DW-shorts-<version>-arm64.dmg` | `npx electron-builder --mac --arm64` |
-| Windows | `DW-shorts-<version>-x64-setup.exe` | `npx electron-builder --win --x64` |
+| macOS (arm64) | `DW-shorts-<version>-arm64.dmg` | `cd desktop && node scripts/build-macos.mjs` |
+| Windows (x64) | `DW-shorts-<version>-x64-setup.exe` | `cd desktop && node scripts/build-windows.mjs` |
+
+两个脚本都是**一条命令走完全流程**：装桌面依赖 → 刷新打包的 Python 源码树 → 构建可重定位的
+Python 运行时 → 构建 ffmpeg → 预取模型权重 → 构建前端 → electron-builder → 校验产物 →
+打印产物的体积与 SHA-256。
+
+- **必须在对应系统上跑**。打包的 Python 解释器是按宿主平台获取的，pip 也只能装匹配宿主的 wheel，
+  在 macOS 上打 Windows 包会把 macOS 解释器塞进 .exe。Windows 端请用 Windows 机器或
+  `windows-2022` CI runner。
+- 常用参数：`--skip-deps`（不跑 npm install）、`--skip-frontend`（不重建前端）、
+  `--skip-models`（不预取模型）、`--help`。
+- 模型权重较大且下载慢，**已存在时会直接复用** `desktop/resources/models` 里的那份，不重复下载。
+- 只想跑底层步骤时：`npm run build:python` / `build:ffmpeg` / `verify:bundle`。
 
 安装后目录布局见方案 §2.3。模型权重（`faster-whisper-small` ~464 MB、 `yolov8n.pt` ~6 MB）与 ffmpeg 已内置，首次运行**无需联网下载**。
 

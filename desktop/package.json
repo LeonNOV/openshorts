@@ -9,9 +9,11 @@
     "build:frontend": "cd ../dashboard && npm install && npm run build",
     "build:python": "node scripts/build-python.mjs",
     "build:ffmpeg": "node scripts/build-ffmpeg.mjs",
-    "prefetch:models": "python scripts/prefetch_models.py desktop/resources small",
+    "prefetch:models": "python ../scripts/prefetch_models.py resources/models small",
     "verify:bundle": "node scripts/verify-bundle.mjs",
     "prepare:source": "node ../scripts/prepare-source.mjs",
+    "build:mac": "node scripts/build-macos.mjs",
+    "build:win": "node scripts/build-windows.mjs",
     "dist:mac": "npm run build:frontend && electron-builder --config electron/builder-config.js --mac --arm64",
     "dist:win": "npm run build:frontend && electron-builder --config electron/builder-config.js --win --x64"
   },
