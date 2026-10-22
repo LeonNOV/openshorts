@@ -26,6 +26,12 @@ output/
 desktop/resources/*
 !desktop/resources/安装.command
 
+# The packaged app and its build deps: ~2 GB of output plus node_modules.
+# Both are produced by `electron-builder` / `npm install` in desktop/.
+desktop/dist/
+desktop/node_modules/
+desktop/package-lock.json
+
 # OS / IDE
 .DS_Store
 .idea/
