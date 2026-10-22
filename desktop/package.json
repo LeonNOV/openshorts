@@ -1,18 +1,19 @@
 {
   "name": "dw-shorts",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "description": "DW-shorts desktop app (macOS arm64 / Windows x64)",
   "main": "electron/main.js",
   "author": "DW-shorts",
   "private": true,
   "scripts": {
-    "build:frontend": "cd ../dashboard && npm ci && npm run build",
+    "build:frontend": "cd ../dashboard && npm install && npm run build",
     "build:python": "node scripts/build-python.mjs",
     "build:ffmpeg": "node scripts/build-ffmpeg.mjs",
     "prefetch:models": "python scripts/prefetch_models.py desktop/resources small",
     "verify:bundle": "node scripts/verify-bundle.mjs",
-    "dist:mac": "npm run build:frontend && electron-builder --mac --arm64",
-    "dist:win": "npm run build:frontend && electron-builder --win --x64"
+    "prepare:source": "node ../scripts/prepare-source.mjs",
+    "dist:mac": "npm run build:frontend && electron-builder --config electron/builder-config.js --mac --arm64",
+    "dist:win": "npm run build:frontend && electron-builder --config electron/builder-config.js --win --x64"
   },
   "devDependencies": {
     "electron": "^33.0.0",

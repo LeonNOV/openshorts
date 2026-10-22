@@ -42,7 +42,9 @@ check(`yolo weights exist (${yolo})`, fs.existsSync(yolo));
 
 if (ok && fs.existsSync(pyBin)) {
   try {
+    const appSrc = path.join(bundle, 'app_src');
     execFileSync(pyBin, ['-c',
+      `import sys; sys.path.insert(0, ${JSON.stringify(appSrc)}); ` +
       'import main, fastapi, torch, ultralytics, mediapipe, faster_whisper; print("import-ok")'],
       { stdio: 'inherit' });
     console.log('PASS  bundled python imports the pipeline');

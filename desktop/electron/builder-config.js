@@ -2,46 +2,52 @@
  * electron-builder configuration for DW-shorts (plan §7.3).
  *
  * Deliberately NOT signed / notarized (plan §11 / P4). extraResources copies
- * the Python prefix, ffmpeg, models and the built dashboard into the app so
- * they land under process.resourcesPath at runtime. The Electron main process
- * points DW_SHORTS_BUNDLE at that directory.
+ * the Python prefix, ffmpeg, models, the bundled Python SOURCE tree and the
+ * built dashboard into the app so they land under process.resourcesPath at
+ * runtime. The Electron main process points DW_SHORTS_BUNDLE, DW_SHORTS_DATA_DIR,
+ * DW_SHORTS_DASHBOARD_DIR and PYTHONPATH at that directory.
+ *
+ * Run from desktop/ with:
+ *   electron-builder --config electron/builder-config.js --mac --arm64
  */
 const path = require('path');
-
-/** Repo root = desktop/.. */
-const root = path.resolve(__dirname, '..', '..');
 
 module.exports = {
   appId: 'com.dwshorts.app',
   productName: 'DW-shorts',
-  // Build artifacts land in desktop/dist; buildResources are the static extras.
+  artifactName: 'DW-shorts-${version}-${arch}.${ext}',
+  // Build artifacts land in desktop/dist; app dir is desktop/ itself (it holds
+  // the package.json whose `main` points at electron/main.js).
   directories: {
     output: 'dist',
     buildResources: 'resources',
-    app: root,
+    app: '.',
   },
-  // Only what the runtime needs — the large resources live in extraResources.
+  // Only the Electron shell goes into the asar; everything else is extraResources.
   files: [
-    'desktop/electron/**/*',
-    'desktop/package.json',
+    'electron/**/*',
+    'package.json',
   ],
   extraResources: [
-    { from: 'desktop/resources/python', to: 'python' },
-    { from: 'desktop/resources/bin', to: 'bin' },
-    { from: 'desktop/resources/models', to: 'models' },
-    { from: 'dashboard/dist', to: 'app' },
-    { from: 'fonts', to: 'fonts' },
+    { from: 'resources/python', to: 'python' },
+    { from: 'resources/bin', to: 'bin' },
+    { from: 'resources/models', to: 'models' },
+    // Bundled Python source so `python -m uvicorn app:app` can import the pipeline.
+    { from: 'resources/app_src', to: 'app_src' },
+    // Built dashboard (dashboard/dist) served by the backend at "/".
+    { from: '../dashboard/dist', to: 'app' },
   ],
   mac: {
-    target: [{ target: 'dmg', arch: ['arm64'] }],
-    // No Developer ID / no notarization (plan §11). See install.command for the
+    target: [{ target: 'dmg', arch: 'arm64' }],
+    // No Developer ID / no notarization (plan §11). See 安装.command for the
     // free Personal-Team sign option that removes the Gatekeeper first-launch block.
     identity: null,
     notarize: false,
     hardenedRuntime: false,
+    gatekeeperAssess: false,
   },
   win: {
-    target: [{ target: 'nsis', arch: ['x64'] }],
+    target: [{ target: 'nsis', arch: 'x64' }],
     // No Authenticode signature (plan §11). Users click "More info → Run anyway".
     signed: false,
   },

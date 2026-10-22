@@ -18,7 +18,9 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(__dirname, '..', '..');
 const pyDir = path.join(root, 'desktop', 'resources', 'python');
 const requirements = path.join(root, 'requirements.txt');
-const MIRROR = 'https://pypi.tuna.tsinghua.edu.cn/simple';
+// On GitHub-hosted runners (US) the official PyPI is fastest; the Tsinghua mirror
+// is only faster on a China-local network. Override with DW_PIP_INDEX if needed.
+const MIRROR = process.env.DW_PIP_INDEX || 'https://pypi.org/simple';
 
 // Remove any stale prefix so the trim verification is against a clean build.
 fs.rmSync(pyDir, { recursive: true, force: true });
@@ -29,12 +31,14 @@ function have(cmd) {
   catch { return false; }
 }
 const useUv = have('uv');
-const py = useUv ? 'uv' : (process.platform === 'win32' ? 'py -3.12' : 'python3.12');
+// Fallback interpreter for the venv (actions/setup-python exposes python3 / python;
+// uv is preferred when present on CI).
+const pyExe = useUv ? 'uv' : (process.platform === 'win32' ? 'python' : 'python3');
 
 console.log(`[build-python] using ${useUv ? 'uv' : 'venv+pip'} (python 3.12)`);
 const venvCmd = useUv
   ? `uv venv --python 3.12 "${pyDir}"`
-  : `python3.12 -m venv "${pyDir}"`;
+  : `"${pyExe}" -m venv "${pyDir}"`;
 execSync(venvCmd, { stdio: 'inherit' });
 
 const pip = useUv
@@ -42,7 +46,7 @@ const pip = useUv
   : `"${path.join(pyDir, 'bin', 'python')}" -m pip install --index-url ${MIRROR}`;
 const pyBin = process.platform === 'win32'
   ? path.join(pyDir, 'Scripts', 'python.exe')
-  : path.join(pyDir, 'bin', 'python3.12');
+  : path.join(pyDir, 'bin', 'python');
 
 execSync(`${pip} -r "${requirements}"`, { stdio: 'inherit' });
 
@@ -56,8 +60,11 @@ const trimCmd = useUv
 try { execSync(trimCmd, { stdio: 'inherit' }); }
 catch { console.warn('[build-python] some trim packages were not installed (ok)'); }
 
-// Verify the real import path still works after trimming.
+// Verify the real import path still works after trimming. The repo source lives
+// at `root`, which is not on the bundled python's sys.path — insert it explicitly.
 const verify = [
+  'import sys',
+  `sys.path.insert(0, ${JSON.stringify(root)})`,
   'import main, fastapi, torch, ultralytics, mediapipe, faster_whisper',
   'print("import-ok")',
 ].join('; ');

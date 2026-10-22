@@ -7570,8 +7570,11 @@ async def saasshorts_voices(
 # dashboard uses hash-based routing (#app), so serving index.html at "/" is
 # sufficient; deep links and reloads stay on the client side.
 # ---------------------------------------------------------------------------
-_DASHBOARD_DIST = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                               "dashboard", "dist")
+# In a desktop build the dashboard lives under the bundled resources
+# (extraResources -> <resources>/app), so honor DW_SHORTS_DASHBOARD_DIR when set;
+# otherwise fall back to the dev layout (repo_root/dashboard/dist).
+_DASHBOARD_DIST = os.environ.get("DW_SHORTS_DASHBOARD_DIR") or os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "dashboard", "dist")
 if os.path.isdir(_DASHBOARD_DIST):
     app.mount("/", StaticFiles(directory=_DASHBOARD_DIST, html=True),
               name="dashboard")

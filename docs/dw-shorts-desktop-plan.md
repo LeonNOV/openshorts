@@ -1,7 +1,7 @@
 # DW-shorts 桌面应用 · 实施方案
 
 > 分支：`dw-shorts-dev`（从 `dw-dev` 切出，基线 `1ea9774`）
-> 状态：**P0–P4 代码已全部落地（macOS arm64 本机验证通过）**
+> 状态：**P0–P4 代码已全部落地 + GitHub Actions 构建/发布流水线已就绪**
 > - P0 代码改造 + 离线出片 PASS（提交 `dec4634`）。
 > - P1/P2 脚手架（desktop/ 全套）已编写并通过 JS 语法检查（`abe3b42`）。
 > - P3 已实现并验证：后端 `/api/selfcheck`、`/api/settings`（GET/PUT，`settings.json` 落地数据目录）、dashboard 静态托管 `/`（不遮蔽 `/api`）、端口 `DW_SHORTS_PORT` 覆盖；密钥迁移到 OS keychain（`lib/secrets.js`，web 回退不变）；首次运行向导 `FirstRunWizard.jsx`（自检→填 key→选模型）；后端退出/失败 `dwShell` 提示。Dashboard `vite build` 通过，后端端点 TestClient 全部 200，6 项单测全绿。
@@ -10,6 +10,7 @@
 > - P0 代码改造（§5.1 `desktop_runtime.py` + app.py/main.py 接入、§5.2 数据目录、§4.1 `scripts/prefetch_models.py`）已提交 `dec4634`。
 > - P0 离线验证脚本 `scripts/p0_offline_smoke.py` + 单测 `tests/test_desktop_runtime.py`：本机 PASS；复现 CI `p0-desktop-verify.yml`（macos-14 / windows-2022）已建。
 > - P1/P2 脚手架（`desktop/`：package.json、electron main/preload/builder-config、build-python/build-ffmpeg/verify-bundle 脚本）已编写并通过 JS 语法检查，构建/验证在对应平台 CI 跑通（本机仅 macOS，无法跑 electron-builder）。
+> - **GitHub Actions 构建/发布流水线** `.github/workflows/release.yml` 已加：macos-14 出 `DW-shorts-<ver>-arm64.dmg`、windows-2022 出 `DW-shorts-<ver>-x64.exe`（nsis），release 任务合并两者发布为**正式稳定版**（非 draft、非 prerelease，`generate_release_notes`）。Tag 触发（`v*`）或 `workflow_dispatch` 自动建 tag。关键修复：源树需作为 `app_src` 一并打包（`scripts/prepare-source.mjs`），后端经 `PYTHONPATH`/`DW_SHORTS_DASHBOARD_DIR` 找到源码与前端；`build-python.mjs` 改用 `actions/setup-python` 的 `python3`/`python` 建 venv（不再依赖 uv）。
 
 ---
 

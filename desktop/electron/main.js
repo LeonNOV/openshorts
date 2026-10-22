@@ -82,6 +82,10 @@ function startBackend() {
     PYTHONUNBUFFERED: '1',
   };
   if (settings.whisperSize) env.DW_SHORTS_WHISPER_SIZE = String(settings.whisperSize);
+  // The bundled Python source tree and the built dashboard both live under
+  // process.resourcesPath; make the backend find them.
+  env.DW_SHORTS_DASHBOARD_DIR = path.join(res, 'app');
+  env.PYTHONPATH = path.join(res, 'app_src');
   backend = spawn(pythonExe(), ['-m', 'uvicorn', 'app:app', '--host', '127.0.0.1',
     '--port', String(PORT)], {
     cwd: app.getPath('userData'),

@@ -1,0 +1,169 @@
+name: Build & Release DW-shorts
+
+# Builds the DW-shorts desktop app for macOS arm64 and Windows x64, then publishes
+# a STABLE (non-draft, non-prerelease) GitHub release with both installers.
+# Triggered by pushing a tag like `v1.0.0`, or via workflow_dispatch (which creates
+# the tag for you and lets the tag-push run do the actual build).
+#
+# Each platform builds natively on its own runner (electron-builder cannot
+# cross-compile the signed/unsigned artifact), then a release job combines the
+# two artifacts.
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Release version, e.g. 1.0.0 (a v-prefixed tag is created)'
+        required: true
+        default: '1.0.0'
+
+permissions:
+  contents: write
+
+jobs:
+  # Only runs for workflow_dispatch: creates the tag so the tag-push path builds.
+  tag:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Create and push tag
+        env:
+          TAG: v${{ inputs.version }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag "$TAG"
+          git push origin "$TAG"
+
+  build-mac:
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Set up Python 3.12 (used to build the bundled venv)
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install desktop build deps
+        working-directory: desktop
+        run: npm install
+
+      - name: Bundle Python source tree (app_src)
+        run: node scripts/prepare-source.mjs
+
+      - name: Build bundled Python venv
+        working-directory: desktop
+        run: npm run build:python
+
+      - name: Build bundled ffmpeg
+        working-directory: desktop
+        run: npm run build:ffmpeg
+
+      - name: Pre-fetch models (uses the bundled venv python)
+        run: desktop/resources/python/bin/python3.12 scripts/prefetch_models.py desktop/resources small
+
+      - name: Build macOS dmg
+        working-directory: desktop
+        run: npm run dist:mac
+
+      - name: Verify bundle
+        working-directory: desktop
+        run: npm run verify:bundle
+
+      - name: Upload macOS artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: dwshorts-macos
+          path: desktop/dist/DW-shorts-*
+          if-no-files-found: error
+
+  build-win:
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Set up Python 3.12 (used to build the bundled venv)
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install desktop build deps
+        working-directory: desktop
+        run: npm install
+
+      - name: Bundle Python source tree (app_src)
+        run: node scripts/prepare-source.mjs
+
+      - name: Build bundled Python venv
+        working-directory: desktop
+        run: npm run build:python
+
+      - name: Build bundled ffmpeg
+        working-directory: desktop
+        run: npm run build:ffmpeg
+
+      - name: Pre-fetch models (uses the bundled venv python)
+        run: desktop/resources/python/Scripts/python.exe scripts/prefetch_models.py desktop/resources small
+
+      - name: Build Windows installer
+        working-directory: desktop
+        run: npm run dist:win
+
+      - name: Verify bundle
+        working-directory: desktop
+        run: npm run verify:bundle
+
+      - name: Upload Windows artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: dwshorts-windows
+          path: desktop/dist/DW-shorts-*
+          if-no-files-found: error
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: [build-mac, build-win]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download macOS artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: dwshorts-macos
+          path: macos
+
+      - name: Download Windows artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: dwshorts-windows
+          path: windows
+
+      - name: Publish stable release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: DW-shorts ${{ github.ref_name }}
+          draft: false
+          prerelease: false
+          generate_release_notes: true
+          files: |
+            macos/*
+            windows/*

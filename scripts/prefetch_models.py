@@ -39,14 +39,22 @@ def main() -> None:
     shutil.copytree(src, target)
     print(f"whisper -> {target}")
 
-    # 2) YOLO — let ultralytics fetch yolov8n.pt into CWD, then copy it.
+    # 2) YOLO — let ultralytics fetch yolov8n.pt into a temp dir, then copy it.
     from ultralytics import YOLO
 
-    YOLO("yolov8n.pt")
-    yolo_src = "yolov8n.pt"
-    if not os.path.exists(yolo_src):
-        raise SystemExit("yolov8n.pt was not produced by ultralytics")
-    shutil.copy(yolo_src, os.path.join(dest, "yolov8n.pt"))
+    dl = os.path.join(dest, ".dl_yolo")
+    os.makedirs(dl, exist_ok=True)
+    prev_cwd = os.getcwd()
+    os.chdir(dl)
+    try:
+        YOLO("yolov8n.pt")
+        yolo_src = os.path.join(dl, "yolov8n.pt")
+        if not os.path.exists(yolo_src):
+            raise SystemExit("yolov8n.pt was not produced by ultralytics")
+        shutil.copy(yolo_src, os.path.join(dest, "yolov8n.pt"))
+    finally:
+        os.chdir(prev_cwd)
+        shutil.rmtree(dl, ignore_errors=True)
     print(f"yolo    -> {os.path.join(dest, 'yolov8n.pt')}")
 
     print("done ->", dest)
