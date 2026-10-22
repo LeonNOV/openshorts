@@ -20,7 +20,7 @@
  *
  * Usage: node scripts/fetch-python.mjs <dest_dir>
  */
-import { execFileSync, execSync } from 'node:child_process';
+import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -43,7 +43,22 @@ const platform = isWin
 const asset = `cpython-${PY_VERSION}+${PBS_RELEASE}-${platform}-install_only.tar.gz`;
 const url = `https://github.com/astral-sh/python-build-standalone/releases/download/${PBS_RELEASE}/${asset}`;
 
-const exe = path.join(destDir, 'bin', isWin ? 'python.exe' : 'python3.12');
+/**
+ * Where the interpreter lives inside the standalone tree.
+ * The Windows build puts python.exe at the ROOT of the tree; the POSIX build
+ * puts it under bin/. Getting this wrong makes the build fail with
+ * "interpreter missing after extraction".
+ */
+function interpreterPath(dir) {
+  if (isWin) return path.join(dir, 'python.exe');
+  for (const n of ['python3.12', 'python3', 'python']) {
+    const p = path.join(dir, 'bin', n);
+    if (fs.existsSync(p)) return p;
+  }
+  return path.join(dir, 'bin', 'python3.12');
+}
+
+const exe = interpreterPath(destDir);
 if (fs.existsSync(exe)) {
   console.log(`[fetch-python] already present -> ${destDir}`);
   process.exit(0);
@@ -59,7 +74,10 @@ const archive = path.join(stage, 'python.tar.gz');
 
 try {
   console.log(`[fetch-python] downloading ${url}`);
-  execSync(`curl -fsSL --retry 5 --retry-delay 3 --retry-all-errors -o "${archive}" "${url}"`, { stdio: 'inherit' });
+  // Array args, not a shell string: the URL contains a '+' and the path may
+  // contain spaces (Windows runners put the workdir under D:\a\...).
+  execFileSync('curl', ['-fsSL', '--retry', '5', '--retry-delay', '3',
+    '--retry-all-errors', '-o', archive, url], { stdio: 'inherit' });
 
   console.log('[fetch-python] extracting…');
   // Both platform tarballs unpack to a top-level `python/` directory.
@@ -89,14 +107,17 @@ try {
   catch { console.warn(`[fetch-python] could not remove the staging dir at ${stage} (ok)`); }
 }
 
-if (!fs.existsSync(exe)) {
-  throw new Error(`[fetch-python] interpreter missing after extraction: ${exe}`);
+// Re-resolve the interpreter now that the tree is in place (the Windows
+// layout differs from the POSIX one, and the check must reflect reality).
+const finalExe = interpreterPath(destDir);
+if (!fs.existsSync(finalExe)) {
+  throw new Error(`[fetch-python] interpreter missing after extraction: ${finalExe}`);
 }
 
 // The standalone build ships its own pip. Make sure it is usable — some
 // archives ship pip without the console scripts, and a stale pip cannot
 // parse modern PEP 691 simple-index responses.
-execFileSync(exe, ['-m', 'pip', 'install', '--upgrade', 'pip'], { stdio: 'inherit' });
+execFileSync(finalExe, ['-m', 'pip', 'install', '--no-cache-dir', '--upgrade', 'pip'], { stdio: 'inherit' });
 
 console.log(`[fetch-python] DONE -> ${destDir}`);
-console.log(`[fetch-python] DW_SHORTS_PYTHON=${exe}`);
+console.log(`[fetch-python] DW_SHORTS_PYTHON=${finalExe}`);

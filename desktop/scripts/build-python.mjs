@@ -20,7 +20,7 @@
  *
  * Usage: node scripts/build-python.mjs
  */
-import { execSync, execFileSync } from 'node:child_process';
+import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -34,28 +34,43 @@ const requirements = path.join(root, 'requirements.txt');
 const MIRROR = process.env.DW_PIP_INDEX || 'https://pypi.org/simple';
 
 // 1) Fetch the relocatable interpreter (fresh every build).
-execSync(`"${process.execPath}" "${path.join(__dirname, 'fetch-python.mjs')}" "${pyDir}"`, {
-  stdio: 'inherit',
-});
+execFileSync(process.execPath, [path.join(__dirname, 'fetch-python.mjs'), pyDir], { stdio: 'inherit' });
 
-/** Resolve the interpreter without assuming a version-stamped name. */
+/**
+ * Resolve the interpreter without assuming a version-stamped name.
+ *
+ * The standalone runtime's layout differs by platform:
+ *   - POSIX   : <dir>/bin/python3.12 (+ python, python3 symlinks)
+ *   - Windows : <dir>/python.exe  (at the ROOT, not under bin/ or Scripts/)
+ * Probe rather than guess.
+ */
 function resolvePyBin(dir) {
-  const bin = process.platform === 'win32' ? 'bin' : 'bin';
-  const names = process.platform === 'win32'
+  const isWin = process.platform === 'win32';
+  const dirs = isWin ? ['', 'bin', 'Scripts'] : ['bin', ''];
+  const names = isWin
     ? ['python.exe', 'python3.exe', 'python']
     : ['python', 'python3', 'python3.12'];
-  for (const n of names) {
-    const p = path.join(dir, bin, n);
-    if (fs.existsSync(p)) return p;
+  for (const d of dirs) {
+    for (const n of names) {
+      const p = path.join(dir, d, n);
+      if (fs.existsSync(p)) return p;
+    }
   }
-  throw new Error(`[build-python] no interpreter found in ${path.join(dir, bin)}`);
+  throw new Error(`[build-python] no interpreter found under ${dir}`);
 }
 const pyBin = resolvePyBin(pyDir);
 console.log(`[build-python] interpreter: ${pyBin}`);
 
 // 2) Install the dependencies straight into the interpreter's site-packages.
-const pip = `"${pyBin}" -m pip install --index-url ${MIRROR}`;
-execSync(`${pip} -r "${requirements}"`, { stdio: 'inherit' });
+// Use execFileSync with an argument array: a shell-quoted command string
+// breaks on Windows once the path contains a space, and there is no shell
+// feature we need here.
+// --no-cache-dir: the wheels are ~1.3 GB and the CI runners have limited
+// free disk; the cache would double the footprint for no benefit here.
+const tInstall = Date.now();
+console.log('[build-python] installing the dependencies (torch et al. — a few minutes)…');
+execFileSync(pyBin, ['-m', 'pip', 'install', '--no-cache-dir', '--index-url', MIRROR, '-r', requirements], { stdio: 'inherit' });
+console.log(`[build-python] dependencies installed in ${((Date.now() - tInstall) / 1000).toFixed(1)}s`);
 
 /**
  * Trim deps the desktop build never uses (plan §1.2 / risk §10).
@@ -81,14 +96,14 @@ execSync(`${pip} -r "${requirements}"`, { stdio: 'inherit' });
  */
 const trim = ['jaxlib', 'jax'];
 try {
-  execSync(`"${pyBin}" -m pip uninstall -y ${trim.join(' ')}`, { stdio: 'inherit' });
+  execFileSync(pyBin, ['-m', 'pip', 'uninstall', '-y', ...trim], { stdio: 'inherit' });
 } catch { console.warn('[build-python] some trim packages were not installed (ok)'); }
 
 // A trimmed package leaves its dependents' metadata dangling. Report it
 // loudly so a future dependency change can't silently break the shipped app —
 // but do not fail the build, because jax's absence is intentional and known.
 try {
-  execSync(`"${pyBin}" -m pip check`, { stdio: 'inherit' });
+  execFileSync(pyBin, ['-m', 'pip', 'check'], { stdio: 'inherit' });
   console.log('[build-python] pip check: clean');
 } catch {
   console.warn('[build-python] pip check reported (expected for trimmed jax)');
@@ -122,23 +137,30 @@ const runtimeVerify = [
 execFileSync(pyBin, ['-c', runtimeVerify], { stdio: 'inherit' });
 
 // 4) RELOCATION TEST — the whole point of using a relocatable interpreter.
-// Copy the runtime to a throwaway location, run it from there, and make sure
-// the dependencies still import. This catches any absolute path that leaked
-// into the bundle, BEFORE it ships to a user who would get a dead app.
+// Run the runtime from a DIFFERENT path and make sure the dependencies still
+// import. This catches any absolute path that leaked into the bundle, BEFORE
+// it ships to a user who would get a dead app.
+//
+// RENAME the tree instead of copying it: a rename is atomic and free, while
+// a copy of the ~1.3 GB runtime would blow past the runner's free disk
+// space (and then the job gets cancelled mid-build). Renaming genuinely
+// exercises the same thing — the interpreter resolves its prefix from its own
+// location, and the dependencies are imported from the new path.
 const probeParent = path.join(root, 'desktop', 'resources');
-const probe = path.join(probeParent, `.relocate-probe-${process.pid}`);
+const relocated = path.join(probeParent, `.relocated-${process.pid}`);
 try {
-  fs.mkdirSync(probe, { recursive: true });
-  execSync(`cp -R "${pyDir}" "${probe}/python"`, { stdio: 'inherit' });
-  const movedBin = resolvePyBin(path.join(probe, 'python'));
+  fs.renameSync(pyDir, relocated);
+  const movedBin = resolvePyBin(relocated);
   execFileSync(movedBin, ['-c',
     'import torch, ultralytics, mediapipe, faster_whisper, onnxruntime; ' +
     'import sys; print("relocate-ok", sys.prefix)'],
     { stdio: 'inherit' });
   console.log('[build-python] relocation test: PASS');
 } finally {
-  try { fs.rmSync(probe, { recursive: true, force: true }); }
-  catch { console.warn(`[build-python] could not remove the relocation probe at ${probe} (ok)`); }
+  // Put it back where the rest of the build expects it.
+  if (fs.existsSync(relocated) && !fs.existsSync(pyDir)) {
+    fs.renameSync(relocated, pyDir);
+  }
 }
 
 console.log('[build-python] DONE ->', pyDir);

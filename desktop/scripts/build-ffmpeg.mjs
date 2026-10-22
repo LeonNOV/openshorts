@@ -11,7 +11,7 @@
  *
  * Usage: node scripts/build-ffmpeg.mjs
  */
-import { execSync } from 'node:child_process';
+import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -28,25 +28,32 @@ const url = isWin
 const zipPath = path.join(binDir, 'ffmpeg.zip');
 
 console.log(`[build-ffmpeg] downloading ${url}`);
-execSync(`curl -fsSL "${url}" -o "${zipPath}"`, { stdio: 'inherit' });
+// Array args, not a shell string: the path can contain spaces and the URL
+// contains characters a shell would mangle.
+execFileSync('curl', ['-fsSL', '--retry', '5', '--retry-all-errors', '-o', zipPath, url], { stdio: 'inherit' });
 
 if (isWin) {
-  execSync(`powershell -NoProfile -Command "Expand-Archive -Force '${zipPath}' '${binDir}'"`, { stdio: 'inherit' });
+  // Expand-Archive is a PowerShell cmdlet; the runner's default shell is
+  // PowerShell 7 (pwsh), and `powershell` (5.1) may not be on PATH.
+  execFileSync('pwsh', ['-NoProfile', '-Command',
+    `Expand-Archive -Force -LiteralPath '${zipPath}' -DestinationPath '${binDir}'`],
+    { stdio: 'inherit' });
   // gyan.dev layout: ffmpeg-<ver>-essentials_build/bin/{ffmpeg,ffprobe}.exe
   const inner = fs.readdirSync(binDir).find((d) => d.startsWith('ffmpeg') && fs.statSync(path.join(binDir, d)).isDirectory());
+  if (!inner) throw new Error(`[build-ffmpeg] could not find the extracted ffmpeg directory in ${binDir}`);
   const srcBin = path.join(binDir, inner, 'bin');
   for (const f of ['ffmpeg.exe', 'ffprobe.exe']) {
     fs.copyFileSync(path.join(srcBin, f), path.join(binDir, f));
   }
   fs.rmSync(path.join(binDir, inner), { recursive: true, force: true });
 } else {
-  execSync(`unzip -o -j "${zipPath}" -d "${binDir}"`, { stdio: 'inherit' });
+  execFileSync('unzip', ['-o', '-j', zipPath, '-d', binDir], { stdio: 'inherit' });
 }
 fs.rmSync(zipPath, { force: true });
 
 const ff = isWin ? 'ffmpeg.exe' : 'ffmpeg';
 const fp = isWin ? 'ffprobe.exe' : 'ffprobe';
 console.log('[build-ffmpeg] versions:');
-execSync(`"${path.join(binDir, ff)}" -version`, { stdio: 'inherit' });
-execSync(`"${path.join(binDir, fp)}" -version`, { stdio: 'inherit' });
+execFileSync(path.join(binDir, ff), ['-version'], { stdio: 'inherit' });
+execFileSync(path.join(binDir, fp), ['-version'], { stdio: 'inherit' });
 console.log('[build-ffmpeg] DONE ->', binDir);
