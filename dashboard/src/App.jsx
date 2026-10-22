@@ -27,51 +27,21 @@ import TrialGate from './components/TrialGate';
 import AdvancedBanner from './components/AdvancedBanner';
 import HistoryTab from './components/HistoryTab';
 import AutopilotTab from './components/AutopilotTab';
+import FirstRunWizard from './components/FirstRunWizard';
 import ProfileMenu from './components/ProfileMenu';
 import Modal from './components/ui/Modal';
 import { useAuth } from './contexts/AuthContext';
 import { apiFetch, apiJson, QuotaError, QUOTA_WALL_EVENT } from './lib/api';
 import { track } from './lib/analytics';
 import { FISH_AUDIO_MODELS } from './lib/providers';
+import {
+  getSecretSync,
+  setSecret,
+  migrateSecretsIfNeeded,
+} from './lib/secrets';
 
-// Enhanced "Encryption" using XOR + Base64 with a Salt
-// This is better than plain Base64 but still client-side.
-const SECRET_KEY = import.meta.env.VITE_ENCRYPTION_KEY || "OpenShorts-Static-Salt-Change-Me";
-const ENCRYPTION_PREFIX = "ENC:";
-
-const encrypt = (text) => {
-  if (!text) return '';
-  try {
-    const xor = text.split('').map((c, i) =>
-      String.fromCharCode(c.charCodeAt(0) ^ SECRET_KEY.charCodeAt(i % SECRET_KEY.length))
-    ).join('');
-    return ENCRYPTION_PREFIX + btoa(xor);
-  } catch (e) {
-    console.error("Encryption failed", e);
-    return text;
-  }
-};
-
-const decrypt = (text) => {
-  if (!text) return '';
-  if (text.startsWith(ENCRYPTION_PREFIX)) {
-    try {
-      const raw = text.slice(ENCRYPTION_PREFIX.length);
-      // Check if it's plain base64 or our custom XOR (simple try)
-      const xor = atob(raw);
-      const result = xor.split('').map((c, i) =>
-        String.fromCharCode(c.charCodeAt(0) ^ SECRET_KEY.charCodeAt(i % SECRET_KEY.length))
-      ).join('');
-      return result;
-    } catch (e) {
-      // Fallback if decryption fails (might be old plain text)
-      return '';
-    }
-  }
-  // Backward compatibility: If no prefix, assume old plain text (or return empty if you want to force re-login)
-  // For migration: Return text as is, so it populates the field, and next save will encrypt it.
-  return text;
-};
+// Secret storage (XOR + Base64 for web, OS keychain in the desktop app) lives
+// in lib/secrets.js so the Electron shell can route it through safeStorage.
 
 // Simple TikTok icon sine Lucide might not have it or it varies
 const TikTokIcon = ({ size = 16, className = "" }) => (
@@ -294,26 +264,14 @@ function App() {
   // the ephemeral local /videos/ files have been cleaned up (e.g. after a reload).
   const [durableClips, setDurableClips] = useState({});
 
-  const [apiKey, setApiKey] = useState(localStorage.getItem('gemini_key') || '');
+  const [apiKey, setApiKey] = useState(getSecretSync('gemini_key'));
   // Social API State - Load encrypted or plain
-  const [uploadPostKey, setUploadPostKey] = useState(() => {
-    const stored = localStorage.getItem('uploadPostKey_v3');
-    if (stored) return decrypt(stored);
-    return '';
-  });
+  const [uploadPostKey, setUploadPostKey] = useState(() => getSecretSync('uploadPostKey_v3'));
   // ElevenLabs API State - Load encrypted
-  const [elevenLabsKey, setElevenLabsKey] = useState(() => {
-    const stored = localStorage.getItem('elevenLabsKey_v1');
-    if (stored) return decrypt(stored);
-    return '';
-  });
+  const [elevenLabsKey, setElevenLabsKey] = useState(() => getSecretSync('elevenLabsKey_v1'));
 
   // fal.ai API State - Load encrypted
-  const [falKey, setFalKey] = useState(() => {
-    const stored = localStorage.getItem('falKey_v1');
-    if (stored) return decrypt(stored);
-    return '';
-  });
+  const [falKey, setFalKey] = useState(() => getSecretSync('falKey_v1'));
 
   // Which text LLM answers the pipeline's prompts: Gemini or DeepSeek.
   // DeepSeek replaces Gemini for the text stages (clip picking, titles,
@@ -321,21 +279,13 @@ function App() {
   const [llmProvider, setLlmProvider] = useState(
     () => localStorage.getItem('llmProvider_v1') || 'gemini');
   // DeepSeek API State - Load encrypted
-  const [deepseekKey, setDeepseekKey] = useState(() => {
-    const stored = localStorage.getItem('deepseekKey_v1');
-    if (stored) return decrypt(stored);
-    return '';
-  });
+  const [deepseekKey, setDeepseekKey] = useState(() => getSecretSync('deepseekKey_v1'));
 
   // Which voice provider synthesizes the narration: ElevenLabs or Fish Audio.
   const [ttsProvider, setTtsProvider] = useState(
     () => localStorage.getItem('ttsProvider_v1') || 'elevenlabs');
   // Fish Audio API State - Load encrypted
-  const [fishAudioKey, setFishAudioKey] = useState(() => {
-    const stored = localStorage.getItem('fishAudioKey_v1');
-    if (stored) return decrypt(stored);
-    return '';
-  });
+  const [fishAudioKey, setFishAudioKey] = useState(() => getSecretSync('fishAudioKey_v1'));
   // Fish Audio model id (s2.1-pro, s2.1-pro-free, s2-pro, s1)
   const [fishAudioModel, setFishAudioModel] = useState(
     () => localStorage.getItem('fishAudioModel_v1') || 's2.1-pro');
@@ -350,6 +300,9 @@ function App() {
     try { return localStorage.getItem('os_social_nudge_dismissed') === '1'; } catch (_) { return false; }
   });
   const [showKeyModal, setShowKeyModal] = useState(false);
+  // Desktop-only UI state: first-run wizard + backend crash banner (plan §6.3/§6.4).
+  const [showWizard, setShowWizard] = useState(false);
+  const [backendDown, setBackendDown] = useState(false);
   const [jobId, setJobId] = useState(null);
   const [status, setStatus] = useState('idle'); // idle, processing, complete, error
   const [results, setResults] = useState(null);
@@ -755,14 +708,14 @@ function App() {
   }, [jobId, status, results, activeTab, noSource, projectState]);
 
   useEffect(() => {
-    // Encrypt Gemini Key too for consistency if desired, but user asked specifically about Social integration not saving well.
-    // For now keeping gemini plain for compatibility unless requested.
-    if (apiKey) localStorage.setItem('gemini_key', apiKey);
+    // The Gemini key is a secret: store it through the vault abstraction so the
+    // desktop app keeps it in the OS keychain (web keeps the encrypted cache).
+    if (apiKey) setSecret('gemini_key', apiKey);
   }, [apiKey]);
 
   useEffect(() => {
     if (uploadPostKey) {
-      localStorage.setItem('uploadPostKey_v3', encrypt(uploadPostKey));
+      setSecret('uploadPostKey_v3', uploadPostKey);
     }
     if (uploadUserId) {
       localStorage.setItem('uploadUserId', uploadUserId);
@@ -771,13 +724,13 @@ function App() {
 
   useEffect(() => {
     if (elevenLabsKey) {
-      localStorage.setItem('elevenLabsKey_v1', encrypt(elevenLabsKey));
+      setSecret('elevenLabsKey_v1', elevenLabsKey);
     }
   }, [elevenLabsKey]);
 
   useEffect(() => {
     if (falKey) {
-      localStorage.setItem('falKey_v1', encrypt(falKey));
+      setSecret('falKey_v1', falKey);
     }
   }, [falKey]);
 
@@ -787,7 +740,7 @@ function App() {
 
   useEffect(() => {
     if (deepseekKey) {
-      localStorage.setItem('deepseekKey_v1', encrypt(deepseekKey));
+      setSecret('deepseekKey_v1', deepseekKey);
     }
   }, [deepseekKey]);
 
@@ -797,13 +750,54 @@ function App() {
 
   useEffect(() => {
     if (fishAudioKey) {
-      localStorage.setItem('fishAudioKey_v1', encrypt(fishAudioKey));
+      setSecret('fishAudioKey_v1', fishAudioKey);
     }
   }, [fishAudioKey]);
 
   useEffect(() => {
     localStorage.setItem('fishAudioModel_v1', fishAudioModel);
   }, [fishAudioModel]);
+
+  // On first mount, copy any pre-existing localStorage secrets into the OS
+  // keychain (desktop) and, if the keychain holds values the cache doesn't,
+  // hydrate them into state. Web builds are a no-op here.
+  useEffect(() => {
+    (async () => {
+      await migrateSecretsIfNeeded();
+      const [g, u, e, f, d, fa] = await Promise.all([
+        getSecret('gemini_key'),
+        getSecret('uploadPostKey_v3'),
+        getSecret('elevenLabsKey_v1'),
+        getSecret('falKey_v1'),
+        getSecret('deepseekKey_v1'),
+        getSecret('fishAudioKey_v1'),
+      ]);
+      if (g) setApiKey(g);
+      if (u) setUploadPostKey(u);
+      if (e) setElevenLabsKey(e);
+      if (f) setFalKey(f);
+      if (d) setDeepseekKey(d);
+      if (fa) setFishAudioKey(fa);
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // First-run wizard + backend crash banner (desktop only; no-ops on web).
+  useEffect(() => {
+    (async () => {
+      try {
+        const s = await apiJson('/api/settings');
+        if (!s.onboarded) setShowWizard(true);
+      } catch {
+        /* settings endpoint absent in older backends — skip the wizard */
+      }
+    })();
+    if (typeof window !== 'undefined' && window.dwShell) {
+      window.dwShell.onBackendExit(() => setBackendDown(true));
+      window.dwShell.onBackendFailed(() => setBackendDown(true));
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   useEffect(() => {
     if ((uploadPostKey || isManaged) && userProfiles.length === 0) {
@@ -1515,6 +1509,16 @@ function App() {
        viewport ever gets, so a h-screen shell hides its own bottom bar behind
        the browser chrome until the user scrolls. */
     <div className="flex h-screen supports-[height:100dvh]:h-[100dvh] bg-paper overflow-hidden">
+      {showWizard && <FirstRunWizard onComplete={() => setShowWizard(false)} />}
+
+      {backendDown && (
+        <div className="fixed bottom-4 left-1/2 -translate-x-1/2 z-50 bg-red-600 text-white text-sm px-4 py-2 rounded-input shadow-lg flex items-center gap-3">
+          <AlertTriangle size={16} />
+          <span>后端进程已退出，部分功能暂不可用。请重启应用或在日志中排查。</span>
+          <button className="underline" onClick={() => setBackendDown(false)}>知道了</button>
+        </div>
+      )}
+
       <Sidebar />
       {navOpen && <MobileNavDrawer />}
 
@@ -1823,7 +1827,7 @@ function App() {
                         <button
                           onClick={() => {
                             if (fishAudioKey) {
-                              localStorage.setItem('fishAudioKey_v1', encrypt(fishAudioKey));
+                              setSecret('fishAudioKey_v1', fishAudioKey);
                               setFishAudioSaved(true);
                               setTimeout(() => setFishAudioSaved(false), 2000);
                             }
@@ -1872,13 +1876,13 @@ function App() {
                         placeholder="sk_..."
                       />
                       <button
-                        onClick={() => {
-                          if (elevenLabsKey) {
-                            localStorage.setItem('elevenLabsKey_v1', encrypt(elevenLabsKey));
-                            setElevenLabsSaved(true);
-                            setTimeout(() => setElevenLabsSaved(false), 2000);
-                          }
-                        }}
+                        on                          onClick={() => {
+                            if (elevenLabsKey) {
+                              setSecret('elevenLabsKey_v1', elevenLabsKey);
+                              setElevenLabsSaved(true);
+                              setTimeout(() => setElevenLabsSaved(false), 2000);
+                            }
+                          }}
                         className={elevenLabsSaved ? 'badge-ok px-4' : 'btn-quiet py-2 px-4 text-sm'}
                       >
                         {elevenLabsSaved ? <><Check size={12} /> saved</> : 'Save'}
@@ -1932,7 +1936,7 @@ function App() {
                     <button
                       onClick={() => {
                         if (falKey) {
-                          localStorage.setItem('falKey_v1', encrypt(falKey));
+                          setSecret('falKey_v1', falKey);
                           setFalSaved(true);
                           setTimeout(() => setFalSaved(false), 2000);
                         }

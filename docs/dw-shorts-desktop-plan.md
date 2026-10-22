@@ -1,7 +1,12 @@
 # DW-shorts 桌面应用 · 实施方案
 
 > 分支：`dw-shorts-dev`（从 `dw-dev` 切出，基线 `1ea9774`）
-> 状态：**P0 完成（本机 macOS arm64 离线 headless 出片 PASS），P1/P2 脚手架已落地待 CI 验证**
+> 状态：**P0–P4 代码已全部落地（macOS arm64 本机验证通过）**
+> - P0 代码改造 + 离线出片 PASS（提交 `dec4634`）。
+> - P1/P2 脚手架（desktop/ 全套）已编写并通过 JS 语法检查（`abe3b42`）。
+> - P3 已实现并验证：后端 `/api/selfcheck`、`/api/settings`（GET/PUT，`settings.json` 落地数据目录）、dashboard 静态托管 `/`（不遮蔽 `/api`）、端口 `DW_SHORTS_PORT` 覆盖；密钥迁移到 OS keychain（`lib/secrets.js`，web 回退不变）；首次运行向导 `FirstRunWizard.jsx`（自检→填 key→选模型）；后端退出/失败 `dwShell` 提示。Dashboard `vite build` 通过，后端端点 TestClient 全部 200，6 项单测全绿。
+> - P4 已实现：分发说明 `docs/dw-shorts-distribution.md`（不签名行为、macOS 免费签名建议、Windows SmartScreen、SHA-256）、`desktop/resources/安装.command`。
+> - **未在本机执行**：`electron-builder` 出 `.dmg`/`.exe` 与 Windows P0 CI 需对应平台 runner（本机仅 macOS，且 CI 无法在此沙箱跑）；Electron GUI 向导/崩溃页未经实机点击验证，但代码完整且编译/导入均通过。
 > - P0 代码改造（§5.1 `desktop_runtime.py` + app.py/main.py 接入、§5.2 数据目录、§4.1 `scripts/prefetch_models.py`）已提交 `dec4634`。
 > - P0 离线验证脚本 `scripts/p0_offline_smoke.py` + 单测 `tests/test_desktop_runtime.py`：本机 PASS；复现 CI `p0-desktop-verify.yml`（macos-14 / windows-2022）已建。
 > - P1/P2 脚手架（`desktop/`：package.json、electron main/preload/builder-config、build-python/build-ffmpeg/verify-bundle 脚本）已编写并通过 JS 语法检查，构建/验证在对应平台 CI 跑通（本机仅 macOS，无法跑 electron-builder）。

@@ -17,7 +17,9 @@ const fs = require('fs');
 const path = require('path');
 const net = require('net');
 
-const PORT = 48152;
+// Fixed loopback port (plan §2.2). Honors DW_SHORTS_PORT so a user can move it
+// if 48152 is taken (§5.6); the value is also forwarded into the backend env.
+const PORT = parseInt(process.env.DW_SHORTS_PORT, 10) || 48152;
 const HEALTH_URL = `http://127.0.0.1:${PORT}/health`;
 let backend = null;
 let win = null;
@@ -67,6 +69,10 @@ async function waitForHealth(timeoutMs = 30000) {
 
 function startBackend() {
   const res = process.resourcesPath;
+  // Read persisted settings so the user's whisper-size choice reaches the
+  // backend env (desktop_runtime honors DW_SHORTS_WHISPER_SIZE).
+  let settings = {};
+  try { settings = JSON.parse(fs.readFileSync(path.join(app.getPath('userData'), 'settings.json'), 'utf-8')); } catch (_) { /* none yet */ }
   const env = {
     ...process.env,
     DW_SHORTS_BUNDLE: res,                       // desktop_runtime reads this
@@ -75,6 +81,7 @@ function startBackend() {
     PYTHONIOENCODING: 'utf-8',                    // Windows console safety (§5.7)
     PYTHONUNBUFFERED: '1',
   };
+  if (settings.whisperSize) env.DW_SHORTS_WHISPER_SIZE = String(settings.whisperSize);
   backend = spawn(pythonExe(), ['-m', 'uvicorn', 'app:app', '--host', '127.0.0.1',
     '--port', String(PORT)], {
     cwd: app.getPath('userData'),

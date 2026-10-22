@@ -2838,6 +2838,61 @@ async def health_ready():
         return JSONResponse({"status": "stopping"}, status_code=503)
     return {"status": "ready"}
 
+@app.get("/api/selfcheck")
+async def selfcheck():
+    """Desktop readiness probe (plan §6.3 step 1).
+
+    Verifies the bundled ffmpeg runs, the whisper CT2 model and YOLO weights
+    are present, the data directory is writable, and the key Python deps
+    import. The first-run wizard calls this to show a concrete checklist
+    instead of letting the user hit a RuntimeError mid-render. Harmless in
+    non-desktop deployments (it simply reports what is and isn't available).
+    """
+    return desktop_runtime.selfcheck()
+
+
+def _read_settings():
+    """Load settings.json from the data dir, or {} when absent / unreadable."""
+    try:
+        with open(os.path.join(DATA_DIR, "settings.json")) as fh:
+            return json.load(fh)
+    except Exception:
+        return {}
+
+
+@app.get("/api/settings")
+async def get_settings():
+    """Read persisted desktop settings (plan §2.4).
+
+    Stored as settings.json in the writable data dir (userData / %APPDATA% in
+    the desktop build). Holds non-secret preferences: the first-run wizard
+    completion flag and the selected whisper model size. Safe to call in any
+    deployment — returns {} when no settings file exists yet.
+    """
+    return _read_settings()
+
+
+class SettingsIn(BaseModel):
+    onboarded: Optional[bool] = None
+    whisperSize: Optional[str] = None
+    outputFormat: Optional[str] = None
+
+
+@app.put("/api/settings")
+async def put_settings(s: SettingsIn):
+    cur = _read_settings()
+    if s.onboarded is not None:
+        cur["onboarded"] = s.onboarded
+    if s.whisperSize is not None:
+        cur["whisperSize"] = s.whisperSize
+    if s.outputFormat is not None:
+        cur["outputFormat"] = s.outputFormat
+    os.makedirs(DATA_DIR, exist_ok=True)
+    with open(os.path.join(DATA_DIR, "settings.json"), "w") as fh:
+        json.dump(cur, fh, indent=2)
+    return cur
+
+
 @app.get("/api/config")
 async def get_config():
     return {
@@ -2850,7 +2905,7 @@ async def get_config():
         "localLlm": None if BILLING_ENABLED else llm_backend.describe(),
     }
 
-async def _probe_youtube_quality(url: str) -> dict:
+
     """Run quality_probe.py in a worker thread; {} on any failure (fail-open)."""
     def _run():
         try:
@@ -7503,3 +7558,20 @@ async def saasshorts_voices(
         "source": "defaults",
         "models": tts.models(chosen),
     }
+
+
+# ---------------------------------------------------------------------------
+# Dashboard hosting (plan §5.4)
+#
+# In a desktop build the FastAPI backend also serves the built dashboard
+# (dashboard/dist) directly, so the UI and the API are same-origin — no CORS,
+# no dev proxy, no port juggling. This mount is added LAST on purpose: a plain
+# "/" StaticFiles mount would otherwise shadow every "/api/*" route above. The
+# dashboard uses hash-based routing (#app), so serving index.html at "/" is
+# sufficient; deep links and reloads stay on the client side.
+# ---------------------------------------------------------------------------
+_DASHBOARD_DIST = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                               "dashboard", "dist")
+if os.path.isdir(_DASHBOARD_DIST):
+    app.mount("/", StaticFiles(directory=_DASHBOARD_DIST, html=True),
+              name="dashboard")

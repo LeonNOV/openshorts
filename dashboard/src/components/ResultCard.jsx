@@ -11,6 +11,7 @@ import WatermarkModal, { watermarkNoticeDismissed } from './WatermarkModal';
 import TikTokDraftNotice from './TikTokDraftNotice';
 import { useAuth } from '../contexts/AuthContext';
 import { renderInBrowser } from '../lib/renderInBrowser';
+import { getSecretSync } from '../lib/secrets';
 
 const QUIET_BTN = 'group flex flex-col items-center justify-center gap-1 py-2.5 sm:py-2 px-1 rounded-input border border-rule hover:bg-paper3 text-[11px] lowercase text-ink2 whitespace-nowrap transition-colors disabled:opacity-45 disabled:cursor-not-allowed';
 
@@ -295,7 +296,7 @@ export default function ResultCard({ clip, index, jobId, durable, uploadPostKey,
         setIsEditing(true);
         setEditError(null);
         try {
-            const apiKey = geminiApiKey || localStorage.getItem('gemini_key');
+            const apiKey = geminiApiKey || getSecretSync('gemini_key');
 
             // Managed (paid) users get the Gemini key resolved server-side;
             // only BYOK/self-host needs a local key.

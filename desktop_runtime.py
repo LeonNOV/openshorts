@@ -30,14 +30,135 @@ import os
 
 
 def _resolve_whisper_model(models_dir: str):
-    """Return the first bundled ``faster-whisper-*`` directory that actually
-    contains ``model.bin``, or ``None`` when nothing suitable is found."""
+    """Return the bundled ``faster-whisper-*`` directory that should be used.
+
+    Honors an explicit ``WHISPER_MODEL`` (set by ``install()`` or the user),
+    then an optional ``DW_SHORTS_WHISPER_SIZE`` (e.g. ``small``), and finally
+    falls back to the first directory that actually contains ``model.bin``.
+    Returns ``None`` when nothing suitable is found.
+    """
+    explicit = os.environ.get("WHISPER_MODEL")
+    if explicit and os.path.isdir(explicit):
+        return explicit
     if not models_dir or not os.path.isdir(models_dir):
         return None
+    size = os.environ.get("DW_SHORTS_WHISPER_SIZE")
+    if size:
+        cand = os.path.join(models_dir, f"faster-whisper-{size}")
+        if os.path.isfile(os.path.join(cand, "model.bin")):
+            return cand
     for path in sorted(glob.glob(os.path.join(models_dir, "faster-whisper-*"))):
         if os.path.isfile(os.path.join(path, "model.bin")):
             return path
     return None
+
+
+def available_whisper_sizes():
+    """List the whisper model sizes present in the bundle (e.g. ['small']).
+
+    Used by the first-run wizard to offer only models that ship with the app.
+    """
+    bundle = os.environ.get("DW_SHORTS_BUNDLE")
+    models_dir = os.path.join(bundle, "models") if bundle else None
+    if not models_dir or not os.path.isdir(models_dir):
+        return []
+    sizes = []
+    for path in sorted(glob.glob(os.path.join(models_dir, "faster-whisper-*"))):
+        if os.path.isfile(os.path.join(path, "model.bin")):
+            sizes.append(os.path.basename(path).replace("faster-whisper-", ""))
+    return sizes
+
+
+def selfcheck():
+    """Offline readiness probe for the bundled desktop app (plan §6.3 step 1).
+
+    Verifies the bundled ffmpeg runs, the whisper CT2 directory and YOLO
+    weights exist, the data directory is writable, and the key Python
+    dependencies import. Returns a structured report; never raises.
+    """
+    checks = {}
+    overall = True
+
+    # 1) ffmpeg / ffprobe — resolves via the PATH injected by install().
+    try:
+        import subprocess
+        r = subprocess.run(
+            ["ffmpeg", "-version"], capture_output=True, timeout=20,
+            env={**os.environ, "PATH": os.environ.get("PATH", "")},
+        )
+        ok = r.returncode == 0 and b"ffmpeg version" in r.stdout
+        checks["ffmpeg"] = {
+            "ok": ok,
+            "detail": (r.stdout.split(b"\n", 1)[0].decode(errors="replace")
+                       if ok else "ffmpeg not found or failed to run"),
+        }
+    except Exception as e:  # noqa: BLE001 - report, don't crash
+        checks["ffmpeg"] = {"ok": False, "detail": f"ffmpeg check failed: {e}"}
+    overall = overall and checks["ffmpeg"]["ok"]
+
+    # 2) whisper CT2 model directory
+    whisper = _resolve_whisper_model(
+        os.path.join(os.environ.get("DW_SHORTS_BUNDLE", ""), "models")
+        if os.environ.get("DW_SHORTS_BUNDLE") else None
+    )
+    # _resolve_whisper_model already checks WHISPER_MODEL / bundle; fall back to
+    # the bare env value for the path reported to the UI.
+    whisper_path = whisper or os.environ.get("WHISPER_MODEL")
+    if whisper_path and os.path.isfile(os.path.join(whisper_path, "model.bin")):
+        checks["whisper_model"] = {"ok": True, "path": whisper_path}
+    else:
+        checks["whisper_model"] = {
+            "ok": False,
+            "path": whisper_path or "",
+            "detail": "missing model.bin — run the model prefetch step",
+        }
+    overall = overall and checks["whisper_model"]["ok"]
+
+    # 3) YOLO weights
+    yolo = os.environ.get("YOLO_MODEL_PATH") or (
+        os.path.join(os.environ.get("DW_SHORTS_BUNDLE", ""), "models", "yolov8n.pt")
+        if os.environ.get("DW_SHORTS_BUNDLE") else None
+    )
+    if yolo and os.path.exists(yolo):
+        checks["yolo"] = {"ok": True, "path": yolo}
+    else:
+        checks["yolo"] = {
+            "ok": False, "path": yolo or "",
+            "detail": "missing yolov8n.pt — run the model prefetch step",
+        }
+    overall = overall and checks["yolo"]["ok"]
+
+    # 4) data directory writable
+    data_dir = resolve_data_dir()
+    try:
+        os.makedirs(data_dir, exist_ok=True)
+        probe = os.path.join(data_dir, ".selfcheck-write-test")
+        with open(probe, "w") as fh:
+            fh.write("ok")
+        os.remove(probe)
+        checks["data_dir_writable"] = {"ok": True, "path": data_dir}
+    except Exception as e:  # noqa: BLE001
+        checks["data_dir_writable"] = {"ok": False, "path": data_dir, "detail": str(e)}
+    overall = overall and checks["data_dir_writable"]["ok"]
+
+    # 5) key Python dependencies import
+    deps = ["faster_whisper", "ultralytics", "mediapipe", "torch", "av",
+            "cv2", "scenedetect", "transnetv2_pytorch"]
+    missing = []
+    for mod in deps:
+        try:
+            __import__(mod)
+        except Exception:  # noqa: BLE001
+            missing.append(mod)
+    checks["python_deps"] = {"ok": not missing, "missing": missing}
+    overall = overall and checks["python_deps"]["ok"]
+
+    return {
+        "ok": overall,
+        "bundle": os.environ.get("DW_SHORTS_BUNDLE") or None,
+        "whisper_sizes_available": available_whisper_sizes(),
+        "checks": checks,
+    }
 
 
 def install() -> None:
