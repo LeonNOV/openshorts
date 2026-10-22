@@ -23,6 +23,12 @@ on:
 permissions:
   contents: write
 
+# One build at a time per ref. A new push cancels the previous run cleanly
+# instead of leaving two runs racing for the same tag and the same Release.
+concurrency:
+  group: dw-shorts-release-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   # Only runs for workflow_dispatch: creates the tag so the tag-push path builds.
   tag:
@@ -38,12 +44,20 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git tag "$TAG"
-          git push origin "$TAG"
+          # Idempotent: -f lets this be re-dispatched for a version that
+          # already has a tag, which is how you retry a build that was
+          # cancelled by runner capacity without changing any code.
+          git tag -f "$TAG"
+          git push -f origin "$TAG"
 
   build-mac:
     if: startsWith(github.ref, 'refs/tags/')
-    runs-on: macos-14
+    # macos-14 (arm64) is DEPRECATED upstream, and GitHub is draining its
+    # runner pool: jobs targeting it are announced as "capacity constraints"
+    # and end up CANCELLED with no logs at all (no runner name, no steps).
+    # macos-15 is the current GA arm64 image, so the build host stays arm64
+    # and no cross-compilation is involved.
+    runs-on: macos-15
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
