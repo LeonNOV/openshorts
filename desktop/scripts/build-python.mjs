@@ -9,7 +9,7 @@
  *
  * Usage: node scripts/build-python.mjs
  */
-import { execSync } from 'node:child_process';
+import { execSync, execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -43,7 +43,7 @@ execSync(venvCmd, { stdio: 'inherit' });
 
 const pip = useUv
   ? `uv pip install --python "${pyDir}" --default-index ${MIRROR}`
-  : `"${path.join(pyDir, 'bin', 'python')}" -m pip install --index-url ${MIRROR}`;
+  : `"${pyBin}" -m pip install --index-url ${MIRROR}`;
 const pyBin = process.platform === 'win32'
   ? path.join(pyDir, 'Scripts', 'python.exe')
   : path.join(pyDir, 'bin', 'python');
@@ -62,11 +62,13 @@ catch { console.warn('[build-python] some trim packages were not installed (ok)'
 
 // Verify the real import path still works after trimming. The repo source lives
 // at `root`, which is not on the bundled python's sys.path — insert it explicitly.
+// Use execFileSync (arg array) so the embedded quotes in the code never get
+// reinterpreted by a shell.
 const verify = [
   'import sys',
   `sys.path.insert(0, ${JSON.stringify(root)})`,
   'import main, fastapi, torch, ultralytics, mediapipe, faster_whisper',
   'print("import-ok")',
 ].join('; ');
-execSync(`"${pyBin}" -c "${verify}"`, { stdio: 'inherit' });
+execFileSync(pyBin, ['-c', verify], { stdio: 'inherit' });
 console.log('[build-python] DONE ->', pyDir);
