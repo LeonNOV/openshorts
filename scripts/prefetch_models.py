@@ -19,7 +19,11 @@ import sys
 
 
 def main() -> None:
-    dest = sys.argv[1] if len(sys.argv) > 1 else "desktop/resources/models"
+    # ABSOLUTE paths only. The YOLO step below chdir()s into a temp directory
+    # and then looks for the downloaded weights by joining a RELATIVE path —
+    # which, after the chdir, resolves against the wrong directory and the
+    # file appears to be missing. Absolute paths make it cwd-independent.
+    dest = os.path.abspath(sys.argv[1] if len(sys.argv) > 1 else "desktop/resources/models")
     whisper_size = (
         os.environ.get("DW_WHISPER_SIZE")
         or (sys.argv[2] if len(sys.argv) > 2 else "small")

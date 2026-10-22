@@ -6,8 +6,13 @@
  * (no system ffmpeg dependency on the user's machine).
  *
  * Builds used:
- *   macOS   : evermeet.cx static build (universal/arm64)
+ *   macOS   : osxexperts.net arm64 build (self-contained: only /usr/lib and
+ *              the system frameworks are linked; no Homebrew dylib chasing)
  *   Windows : gyan.dev "essentials" build (x64)
+ *
+ * The macOS source used to be evermeet.cx, which now answers HTTP 410 Gone —
+ * the service is gone, so the build cannot depend on it. Several URLs are
+ * tried in order because these are third-party CDNs.
  *
  * Usage: node scripts/build-ffmpeg.mjs
  */
@@ -22,34 +27,126 @@ const binDir = path.join(root, 'desktop', 'resources', 'bin');
 fs.mkdirSync(binDir, { recursive: true });
 
 const isWin = process.platform === 'win32';
-const url = isWin
-  ? 'https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip'
-  : 'https://evermeet.cx/ffmpeg/getrelease/ffmpeg/zip';
-const zipPath = path.join(binDir, 'ffmpeg.zip');
+const arch = process.arch;
 
-console.log(`[build-ffmpeg] downloading ${url}`);
-// Array args, not a shell string: the path can contain spaces and the URL
-// contains characters a shell would mangle.
-execFileSync('curl', ['-fsSL', '--retry', '5', '--retry-all-errors', '-o', zipPath, url], { stdio: 'inherit' });
+// Candidate sources, most preferred first.
+const macUrls = [
+  'https://www.osxexperts.net/ffmpeg80arm.zip',
+  'https://www.osxexperts.net/ffmpeg7arm.zip',
+  'https://www.osxexperts.net/ffmpeg6arm.zip',
+];
+const winUrls = [
+  'https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip',
+  'https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-full_build.zip',
+];
+// osxexperts ships ffmpeg and ffprobe as SEPARATE zips; gyan.dev ships both.
+const separateProbe = !isWin;
+const probeUrls = isWin
+  ? []
+  : [
+    'https://www.osxexperts.net/ffprobe80arm.zip',
+    'https://www.osxexperts.net/ffprobe7arm.zip',
+    'https://www.osxexperts.net/ffprobe6arm.zip',
+  ];
 
-if (isWin) {
-  // Expand-Archive is a PowerShell cmdlet; the runner's default shell is
-  // PowerShell 7 (pwsh), and `powershell` (5.1) may not be on PATH.
-  execFileSync('pwsh', ['-NoProfile', '-Command',
-    `Expand-Archive -Force -LiteralPath '${zipPath}' -DestinationPath '${binDir}'`],
-    { stdio: 'inherit' });
-  // gyan.dev layout: ffmpeg-<ver>-essentials_build/bin/{ffmpeg,ffprobe}.exe
-  const inner = fs.readdirSync(binDir).find((d) => d.startsWith('ffmpeg') && fs.statSync(path.join(binDir, d)).isDirectory());
-  if (!inner) throw new Error(`[build-ffmpeg] could not find the extracted ffmpeg directory in ${binDir}`);
-  const srcBin = path.join(binDir, inner, 'bin');
-  for (const f of ['ffmpeg.exe', 'ffprobe.exe']) {
-    fs.copyFileSync(path.join(srcBin, f), path.join(binDir, f));
-  }
-  fs.rmSync(path.join(binDir, inner), { recursive: true, force: true });
-} else {
-  execFileSync('unzip', ['-o', '-j', zipPath, '-d', binDir], { stdio: 'inherit' });
+const urls = isWin ? winUrls : macUrls;
+const workDir = path.join(binDir, '.download');
+fs.mkdirSync(workDir, { recursive: true });
+
+function download(url, dest) {
+  console.log(`[build-ffmpeg] downloading ${url}`);
+  execFileSync('curl', ['-fsSL', '--retry', '5', '--retry-delay', '3',
+    '--retry-all-errors', '-o', dest, url], { stdio: 'inherit' });
 }
-fs.rmSync(zipPath, { force: true });
+
+/** Unzip into `dest`, flattening the directory structure. */
+function extractZip(zip, dest) {
+  if (isWin) {
+    // Expand-Archive is a PowerShell cmdlet; the runner's default shell is
+    // PowerShell 7 (pwsh), and `powershell` (5.1) may not be on PATH.
+    execFileSync('pwsh', ['-NoProfile', '-Command',
+      `Expand-Archive -Force -LiteralPath '${zip}' -DestinationPath '${dest}'`],
+      { stdio: 'inherit' });
+    // gyan.dev layout: ffmpeg-<ver>-essentials_build/bin/{ffmpeg,ffprobe}.exe
+    const inner = fs.readdirSync(dest).find((d) => d.startsWith('ffmpeg') && fs.statSync(path.join(dest, d)).isDirectory());
+    if (!inner) throw new Error(`[build-ffmpeg] could not find the extracted ffmpeg directory in ${dest}`);
+    const srcBin = path.join(dest, inner, 'bin');
+    for (const f of ['ffmpeg.exe', 'ffprobe.exe']) {
+      fs.copyFileSync(path.join(srcBin, f), path.join(dest, f));
+    }
+    fs.rmSync(path.join(dest, inner), { recursive: true, force: true });
+  } else {
+    execFileSync('unzip', ['-o', '-j', zip, '-d', dest], { stdio: 'inherit' });
+  }
+}
+
+/** Find the ffmpeg/ffprobe executables in a freshly extracted directory. */
+function findExe(dir, name) {
+  for (const candidate of [name, `${name}.exe`]) {
+    // Direct hit.
+    if (fs.existsSync(path.join(dir, candidate))) return path.join(dir, candidate);
+    // One level down (the zip may contain a folder).
+    for (const d of fs.readdirSync(dir)) {
+      const p = path.join(dir, d, candidate);
+      if (fs.existsSync(p)) return p;
+      const p2 = path.join(dir, d, 'bin', candidate);
+      if (fs.existsSync(p2)) return p2;
+    }
+  }
+  return null;
+}
+
+/** Copy a freshly extracted executable into the bundle, replacing any old one. */
+function install(src, dest) {
+  // The previous build's copy may be read-only; copyFileSync cannot
+  // overwrite it, so clear it first.
+  try { fs.rmSync(dest, { force: true }); } catch { /* did not exist */ }
+  fs.copyFileSync(src, dest);
+  fs.chmodSync(dest, 0o755);
+}
+
+let installed = 0;
+for (const url of urls) {
+  const zip = path.join(workDir, 'ffmpeg.zip');
+  try {
+    download(url, zip);
+    extractZip(zip, workDir);
+    const ff = findExe(workDir, 'ffmpeg');
+    if (!ff) throw new Error('ffmpeg not found in the archive');
+    install(ff, path.join(binDir, isWin ? 'ffmpeg.exe' : 'ffmpeg'));
+    installed++;
+    break;
+  } catch (e) {
+    console.warn(`[build-ffmpeg] ${url} failed: ${e.message}`);
+  }
+}
+if (!installed) throw new Error('[build-ffmpeg] could not obtain ffmpeg from any source');
+
+if (separateProbe) {
+  let ok = false;
+  for (const url of probeUrls) {
+    const zip = path.join(workDir, 'ffprobe.zip');
+    try {
+      download(url, zip);
+      extractZip(zip, workDir);
+      const fp = findExe(workDir, 'ffprobe');
+      if (!fp) throw new Error('ffprobe not found in the archive');
+      install(fp, path.join(binDir, 'ffprobe'));
+      ok = true;
+      break;
+    } catch (e) {
+      console.warn(`[build-ffmpeg] ${url} failed: ${e.message}`);
+    }
+  }
+  if (!ok) throw new Error('[build-ffmpeg] could not obtain ffprobe from any source');
+}
+
+// Drop the AppleDouble sidecar files (._foo) that macOS zips carry — they
+// are metadata, and electron-builder would ship them into the bundle.
+for (const f of fs.readdirSync(binDir)) {
+  if (f.startsWith('._')) fs.rmSync(path.join(binDir, f), { force: true });
+}
+fs.rmSync(workDir, { recursive: true, force: true });
 
 const ff = isWin ? 'ffmpeg.exe' : 'ffmpeg';
 const fp = isWin ? 'ffprobe.exe' : 'ffprobe';
@@ -57,3 +154,4 @@ console.log('[build-ffmpeg] versions:');
 execFileSync(path.join(binDir, ff), ['-version'], { stdio: 'inherit' });
 execFileSync(path.join(binDir, fp), ['-version'], { stdio: 'inherit' });
 console.log('[build-ffmpeg] DONE ->', binDir);
+void arch;
