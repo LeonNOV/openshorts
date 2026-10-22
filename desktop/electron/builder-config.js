@@ -31,7 +31,10 @@ module.exports = {
   extraResources: [
     { from: 'resources/python', to: 'python' },
     { from: 'resources/bin', to: 'bin' },
-    { from: 'resources/models', to: 'models' },
+    // The model weights are NOT bundled: ~470 MB of float tensors that barely
+    // compress, and they dominated what the user had to download for a 650 MB
+    // app. The app fetches them on demand into its data directory instead
+    // (see model_store.py and the first-run wizard).
     // Bundled Python source so `python -m uvicorn app:app` can import the pipeline.
     { from: 'resources/app_src', to: 'app_src' },
     // Built dashboard (dashboard/dist) served by the backend at "/".

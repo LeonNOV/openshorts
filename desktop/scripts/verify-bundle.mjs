@@ -43,8 +43,6 @@ function resolvePyBin() {
 const pyBin = resolvePyBin();
 const ffmpeg = path.join(bundle, 'bin', isWin ? 'ffmpeg.exe' : 'ffmpeg');
 const ffprobe = path.join(bundle, 'bin', isWin ? 'ffprobe.exe' : 'ffprobe');
-const whisperModel = path.join(bundle, 'models', 'faster-whisper-small', 'model.bin');
-const yolo = path.join(bundle, 'models', 'yolov8n.pt');
 
 let ok = true;
 function check(name, cond) {
@@ -55,8 +53,14 @@ function check(name, cond) {
 check(`python interpreter found (${pyBin || 'none'})`, !!pyBin);
 check(`ffmpeg exists (${ffmpeg})`, fs.existsSync(ffmpeg));
 check(`ffprobe exists (${ffprobe})`, fs.existsSync(ffprobe));
-check(`whisper model.bin exists (${whisperModel})`, fs.existsSync(whisperModel));
-check(`yolo weights exist (${yolo})`, fs.existsSync(yolo));
+// The model weights are deliberately NOT bundled — the app downloads them on
+// demand (model_store.py). Their absence is expected, not a failure; what
+// matters is that the download machinery is present and the source tree can
+// reach it.
+check('model weights are not bundled (downloaded on demand)',
+  !fs.existsSync(path.join(bundle, 'models')));
+check('model_store is in the bundled source tree',
+  fs.existsSync(path.join(bundle, 'app_src', 'model_store.py')));
 
 if (ok && pyBin) {
   try {

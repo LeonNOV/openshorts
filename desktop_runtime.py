@@ -53,16 +53,50 @@ def _resolve_whisper_model(models_dir: str):
     return None
 
 
-def available_whisper_sizes():
-    """List the whisper model sizes present in the bundle (e.g. ['small']).
+def _data_dir_yolo():
+    """The YOLO weights in the data directory, if the app downloaded them."""
+    try:
+        import model_store
 
-    Used by the first-run wizard to offer only models that ship with the app.
+        return model_store.yolo_path() if model_store.yolo_ready() else None
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _data_dir_whisper(size=None):
+    """The downloaded whisper model directory, if there is one."""
+    try:
+        import model_store
+
+        if size:
+            path = model_store.whisper_dir(size)
+            return path if model_store.whisper_ready(size) else None
+        ready = model_store.ready_sizes()
+        return model_store.whisper_dir(ready[0]) if ready else None
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def available_whisper_sizes():
+    """List the whisper model sizes that are ready to use.
+
+    The installer no longer ships the weights, so the data directory (where
+    the app downloads them) is the primary source. A bundle copy still counts
+    for developer builds that prefetch them.
     """
+    sizes = []
+    try:
+        import model_store
+
+        sizes = list(model_store.ready_sizes())
+    except Exception:  # noqa: BLE001 - the module is optional in odd setups
+        sizes = []
+    if sizes:
+        return sizes
     bundle = os.environ.get("DW_SHORTS_BUNDLE")
     models_dir = os.path.join(bundle, "models") if bundle else None
     if not models_dir or not os.path.isdir(models_dir):
         return []
-    sizes = []
     for path in sorted(glob.glob(os.path.join(models_dir, "faster-whisper-*"))):
         if os.path.isfile(os.path.join(path, "model.bin")):
             sizes.append(os.path.basename(path).replace("faster-whisper-", ""))
@@ -96,7 +130,8 @@ def selfcheck():
         checks["ffmpeg"] = {"ok": False, "detail": f"ffmpeg check failed: {e}"}
     overall = overall and checks["ffmpeg"]["ok"]
 
-    # 2) whisper CT2 model directory
+    # 2) whisper CT2 model directory — the downloaded copy in the data dir
+    #    first, the bundle copy second (developer builds still prefetch it).
     whisper = _resolve_whisper_model(
         os.path.join(os.environ.get("DW_SHORTS_BUNDLE", ""), "models")
         if os.environ.get("DW_SHORTS_BUNDLE") else None
@@ -110,12 +145,12 @@ def selfcheck():
         checks["whisper_model"] = {
             "ok": False,
             "path": whisper_path or "",
-            "detail": "missing model.bin — run the model prefetch step",
+            "detail": "model not downloaded yet",
         }
     overall = overall and checks["whisper_model"]["ok"]
 
     # 3) YOLO weights
-    yolo = os.environ.get("YOLO_MODEL_PATH") or (
+    yolo = os.environ.get("YOLO_MODEL_PATH") or _data_dir_yolo() or (
         os.path.join(os.environ.get("DW_SHORTS_BUNDLE", ""), "models", "yolov8n.pt")
         if os.environ.get("DW_SHORTS_BUNDLE") else None
     )
@@ -124,7 +159,7 @@ def selfcheck():
     else:
         checks["yolo"] = {
             "ok": False, "path": yolo or "",
-            "detail": "missing yolov8n.pt — run the model prefetch step",
+            "detail": "weights not downloaded yet",
         }
     overall = overall and checks["yolo"]["ok"]
 
@@ -177,8 +212,21 @@ def install() -> None:
         os.environ["PATH"] = bin_dir + os.pathsep + os.environ.get("PATH", "")
 
     # 2) models — only fill the gaps the caller has not already set.
+    #    The data directory wins: that is where the app downloads the weights
+    #    to (the installer no longer ships them). A bundle copy is the
+    #    fallback for developer builds that still prefetch them.
+    if not os.environ.get("WHISPER_MODEL"):
+        size = os.environ.get("DW_SHORTS_WHISPER_SIZE")
+        whisper = _data_dir_whisper(size) or _data_dir_whisper()
+        if whisper:
+            os.environ["WHISPER_MODEL"] = whisper
+    if not os.environ.get("YOLO_MODEL_PATH"):
+        yolo = _data_dir_yolo()
+        if yolo:
+            os.environ["YOLO_MODEL_PATH"] = yolo
+
     models_dir = os.path.join(bundle, "models")
-    if models_dir and os.path.isdir(models_dir):
+    if os.path.isdir(models_dir):
         if not os.environ.get("WHISPER_MODEL"):
             whisper = _resolve_whisper_model(models_dir)
             if whisper:

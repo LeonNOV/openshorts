@@ -2856,6 +2856,91 @@ async def selfcheck():
     return desktop_runtime.selfcheck()
 
 
+# ---- Model downloads -------------------------------------------------------
+# The installer no longer ships the weights (~470 MB that barely compress),
+# so the app fetches them on demand into its data directory. The download
+# runs in a worker thread and the UI polls /api/models/progress.
+
+_model_download_state = {
+    "state": "idle",       # idle | running | done | error
+    "downloaded": 0,
+    "total": None,
+    "label": "",
+    "error": "",
+}
+_model_download_lock = threading.Lock()
+
+
+def _model_progress(downloaded, total, label):
+    with _model_download_lock:
+        _model_download_state.update({
+            "downloaded": downloaded,
+            "total": total or None,
+            "label": label or "",
+        })
+
+
+def _run_model_download(size: str):
+    """Fetch the whisper model and the YOLO weights (worker thread)."""
+    try:
+        import model_store
+
+        with _model_download_lock:
+            _model_download_state.update({
+                "state": "running", "downloaded": 0, "total": None,
+                "label": "", "error": "",
+            })
+        model_store.download_whisper(size, _model_progress)
+        model_store.download_yolo(_model_progress)
+        with _model_download_lock:
+            _model_download_state.update({
+                "state": "done", "downloaded": 0, "total": None, "label": "",
+            })
+    except Exception as e:  # noqa: BLE001 - surfaced to the UI, never crashes
+        with _model_download_lock:
+            _model_download_state.update({"state": "error", "error": str(e)})
+
+
+class ModelDownloadIn(BaseModel):
+    size: Optional[str] = None
+
+
+@app.get("/api/models")
+async def models_status():
+    """Which model weights are on disk, and where they can be fetched from."""
+    try:
+        import model_store
+
+        return model_store.status()
+    except Exception as e:  # noqa: BLE001
+        return {"error": str(e)}
+
+
+@app.post("/api/models/download")
+async def models_download(req: ModelDownloadIn):
+    """Start fetching the model weights in the background.
+
+    Idempotent: a download already in flight is not restarted.
+    """
+    size = req.size or os.environ.get("DW_SHORTS_WHISPER_SIZE") or "small"
+    with _model_download_lock:
+        if _model_download_state["state"] == "running":
+            return {"started": False, "reason": "already running"}
+        _model_download_state.update({
+            "state": "running", "downloaded": 0, "total": None,
+            "label": "", "error": "",
+        })
+    threading.Thread(target=_run_model_download, args=(size,), daemon=True).start()
+    return {"started": True, "size": size}
+
+
+@app.get("/api/models/progress")
+async def models_progress():
+    """The progress of the running (or last) model download."""
+    with _model_download_lock:
+        return dict(_model_download_state)
+
+
 def _read_settings():
     """Load settings.json from the data dir, or {} when absent / unreadable."""
     try:

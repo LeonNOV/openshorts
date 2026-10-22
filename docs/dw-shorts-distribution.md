@@ -16,8 +16,8 @@ AI 选片与配音仍需用户自带 API key（Gemini / DeepSeek / ElevenLabs / 
 | 架构 | Apple Silicon（arm64） | x64（Intel/AMD） |
 | 系统版本 | macOS 12+ | Windows 10 21H2+ |
 | 内存 | ≥ 8 GB（推荐 16 GB） | ≥ 8 GB（推荐 16 GB） |
-| 磁盘 | ≈ 1.8 GB（small 模型） | ≈ 1.8 GB（small 模型） |
-| 联网 | 仅首次填写远程 API key 时需要 | 同左 |
+| 磁盘 | ≈ 2.1 GB（安装后）+ ≈ 0.5 GB（模型） | ≈ 2.1 GB（安装后）+ ≈ 0.5 GB（模型） |
+| 联网 | 首次运行需下载模型（约 470 MB）；之后本地推理完全离线 | 同左 |
 
 **不支持**：Windows ARM、macOS Intel x64（见方案 §3.1 wheel 矩阵——ctranslate2 无 win_arm64、torch 2.11 无 macOS x86_64）。
 若用户在不受支持的平台运行，Electron 启动时应检测 `process.arch`/`process.platform` 并明确报错退出。
@@ -43,7 +43,9 @@ Python 运行时 → 构建 ffmpeg → 预取模型权重 → 构建前端 → e
 - 模型权重较大且下载慢，**已存在时会直接复用** `desktop/resources/models` 里的那份，不重复下载。
 - 只想跑底层步骤时：`npm run build:python` / `build:ffmpeg` / `verify:bundle`。
 
-安装后目录布局见方案 §2.3。模型权重（`faster-whisper-small` ~464 MB、 `yolov8n.pt` ~6 MB）与 ffmpeg 已内置，首次运行**无需联网下载**。
+安装后目录布局见方案 §2.3。ffmpeg 已内置；**模型权重不再随包分发**，首次运行时由应用下载到本机（`faster-whisper-small` ~464 MB + `yolov8n.pt` ~6 MB），下载一次后即可离线使用。
+
+模型来源可配置：默认走 `https://hf-mirror.com`（`huggingface.co` 在中国大陆不可达），设置环境变量 `DW_MODEL_BASE_URL` 指向自建 CDN 即可（目录结构需与 Hugging Face 一致：`<base>/Systran/faster-whisper-small/resolve/main/model.bin`）。YOLO 权重来自 ultralytics 的 GitHub Release，无需镜像。
 
 ---
 
@@ -124,4 +126,4 @@ Windows 校验（PowerShell）：`Get-FileHash DW-shorts-*.exe -Algorithm SHA256
 
 - 不签名 → macOS 首次需右键/脚本解除隔离；Windows 每次大版本可能再弹 SmartScreen。
 - 远程 AI 能力（选片、语音）依赖用户自带 key，应用不内置任何在线账户。
-- 模型默认仅内置 `small`；切换 `medium`/`large-v3-turbo` 需对应模型目录已内置或在设置中另行下载（方案 §6.3 步骤 3）。
+- 模型默认为 `small`；首次运行向导会引导下载。切换 `medium`/`large-v3-turbo` 时，对应模型会按需下载到本机（方案 §6.3 步骤 3）。
