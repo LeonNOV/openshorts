@@ -17,10 +17,18 @@ const fs = require('fs');
 const path = require('path');
 const net = require('net');
 
-// Fixed loopback port (plan §2.2). Honors DW_SHORTS_PORT so a user can move it
-// if 48152 is taken (§5.6); the value is also forwarded into the backend env.
-const PORT = parseInt(process.env.DW_SHORTS_PORT, 10) || 48152;
-const HEALTH_URL = `http://127.0.0.1:${PORT}/health`;
+// Preferred loopback port (plan §2.2). DW_SHORTS_PORT overrides it.
+//
+// The port is resolved at startup rather than fixed: if 48152 is already
+// taken — by an orphaned backend from a previous launch, or by something
+// else entirely — the app used to silently point its window at whatever was
+// listening there. That is how a stale backend (running an OLD build) kept
+// answering job requests long after the app had been updated. Now the app
+// always runs ITS OWN backend: when the preferred port is busy it picks a
+// free one, and only an explicit DW_SHORTS_PORT is honored as-is.
+const PREFERRED_PORT = parseInt(process.env.DW_SHORTS_PORT, 10) || 48152;
+const PORT_IS_EXPLICIT = !!parseInt(process.env.DW_SHORTS_PORT, 10);
+let PORT = PREFERRED_PORT;
 let backend = null;
 let win = null;
 
@@ -65,21 +73,54 @@ function pythonExe() {
     : path.join(res, 'python', 'bin', 'python3.12');
 }
 
-/** True if the port is already taken (another instance or a stale backend). */
-function portInUse() {
+/** True if the given port is already taken. */
+function portInUse(port) {
   return new Promise((resolve) => {
     const srv = net.createServer();
     srv.once('error', () => resolve(true));
     srv.once('listening', () => { srv.close(() => resolve(false)); });
-    srv.listen(PORT, '127.0.0.1');
+    srv.listen(port, '127.0.0.1');
   });
 }
 
+/** Ask the OS for a free loopback port. */
+function freePort() {
+  return new Promise((resolve, reject) => {
+    const srv = net.createServer();
+    srv.once('error', reject);
+    srv.listen(0, '127.0.0.1', () => {
+      const { port } = srv.address();
+      srv.close(() => resolve(port));
+    });
+  });
+}
+
+/**
+ * Decide which port this instance's backend should use.
+ *
+ * An explicitly configured DW_SHORTS_PORT is honored as-is (the user asked
+ * for it; if it is taken we fail loudly rather than quietly moving). The
+ * default port is only a preference: if something else already holds it, we
+ * take a free port instead of attaching to a foreign server.
+ */
+async function resolvePort() {
+  if (!(await portInUse(PREFERRED_PORT))) return PREFERRED_PORT;
+  if (PORT_IS_EXPLICIT) {
+    throw new Error(
+      `port ${PREFERRED_PORT} is already in use (DW_SHORTS_PORT is set to it)`,
+    );
+  }
+  const port = await freePort();
+  console.log(`[main] port ${PREFERRED_PORT} is busy; using ${port} instead`);
+  return port;
+}
+
 async function waitForHealth(timeoutMs = 30000) {
+  const url = `http://127.0.0.1:${PORT}/health`;
   const start = Date.now();
   while (Date.now() - start < timeoutMs) {
     try {
-      const res = await fetch(HEALTH_URL);
+      const res = await fetch(url);
       if (res.ok) return true;
     } catch (_) { /* not up yet */ }
     await new Promise((r) => setTimeout(r, 500));
@@ -165,11 +206,24 @@ function readSecrets() {
   catch (_) { return {}; }
 }
 
+// One instance per user: a second launch focuses the running window instead
+// of starting a second backend against the same data directory.
+if (!app.requestSingleInstanceLock()) {
+  app.quit();
+} else {
+  app.on('second-instance', () => {
+    if (win && !win.isDestroyed()) {
+      if (win.isMinimized()) win.restore();
+      win.focus();
+    }
+  });
+}
+
 app.whenReady().then(async () => {
-  if (await portInUse()) {
-    // Another instance owns the port — just point the window at it.
-    createWindow();
-    return;
+  try {
+    PORT = await resolvePort();
+  } catch (e) {
+    console.error(`[main] ${e.message}`);
   }
   startBackend();
   const ok = await waitForHealth();
