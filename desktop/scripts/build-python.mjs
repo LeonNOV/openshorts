@@ -41,12 +41,13 @@ const venvCmd = useUv
   : `"${pyExe}" -m venv "${pyDir}"`;
 execSync(venvCmd, { stdio: 'inherit' });
 
-const pip = useUv
-  ? `uv pip install --python "${pyDir}" --default-index ${MIRROR}`
-  : `"${pyBin}" -m pip install --index-url ${MIRROR}`;
 const pyBin = process.platform === 'win32'
   ? path.join(pyDir, 'Scripts', 'python.exe')
   : path.join(pyDir, 'bin', 'python');
+
+const pip = useUv
+  ? `uv pip install --python "${pyDir}" --default-index ${MIRROR}`
+  : `"${pyBin}" -m pip install --index-url ${MIRROR}`;
 
 execSync(`${pip} -r "${requirements}"`, { stdio: 'inherit' });
 
