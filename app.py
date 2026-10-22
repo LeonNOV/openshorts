@@ -37,9 +37,17 @@ import media_auth
 
 load_dotenv()
 
+import desktop_runtime
+desktop_runtime.install()
+
 # Constants
-UPLOAD_DIR = "uploads"
-OUTPUT_DIR = "output"
+# In a desktop build DW_SHORTS_DATA_DIR points at a writable location
+# (userData / %APPDATA%); the installer lands in a read-only directory, so
+# uploads/output must never be relative to CWD. Developer / CI runs leave the
+# variable unset and fall back to the current working directory (unchanged).
+DATA_DIR = desktop_runtime.resolve_data_dir()
+UPLOAD_DIR = os.path.join(DATA_DIR, "uploads")
+OUTPUT_DIR = os.path.join(DATA_DIR, "output")
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 

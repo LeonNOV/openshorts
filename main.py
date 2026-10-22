@@ -50,6 +50,11 @@ warnings.filterwarnings("ignore", category=UserWarning, module='google.protobuf'
 # Load environment variables
 load_dotenv()
 
+# Desktop bundle wiring: points ffmpeg/PATH, WHISPER_MODEL and YOLO_MODEL_PATH
+# at the bundled resources when DW_SHORTS_BUNDLE is set. No-op for dev/CI runs.
+import desktop_runtime
+desktop_runtime.install()
+
 # --- Constants ---
 ASPECT_RATIO = 9 / 16
 

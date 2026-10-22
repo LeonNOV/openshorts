@@ -1,7 +1,7 @@
 # DW-shorts 桌面应用 · 实施方案
 
 > 分支：`dw-shorts-dev`（从 `dw-dev` 切出，基线 `1ea9774`）
-> 状态：设计方案，待 P0 可行性验证
+> 状态：**P0 启动中** — 本地代码改造（§5.1/§5.2/§4.1）已落地；macOS arm64 本机 headless 出片离线验证 **PASS**（2026-10-22）；Windows x64 待 CI `p0-desktop-verify` 跑通
 
 ---
 
