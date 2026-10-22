@@ -142,8 +142,12 @@ def selfcheck():
     overall = overall and checks["data_dir_writable"]["ok"]
 
     # 5) key Python dependencies import
+    # NOTE: onnxruntime is listed because faster-whisper's Silero VAD imports
+    # it LAZILY (faster_whisper/vad.py), so a missing onnxruntime passes every
+    # import check and only fails when a real transcription runs. The pipeline
+    # defaults to "vad_filter": True, so it is load-bearing.
     deps = ["faster_whisper", "ultralytics", "mediapipe", "torch", "av",
-            "cv2", "scenedetect", "transnetv2_pytorch"]
+            "cv2", "scenedetect", "transnetv2_pytorch", "onnxruntime"]
     missing = []
     for mod in deps:
         try:

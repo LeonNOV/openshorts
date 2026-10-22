@@ -52,7 +52,7 @@ jobs:
         with:
           node-version: 22
 
-      - name: Set up Python 3.12 (used to build the bundled venv)
+      - name: Set up Python (for the build scripts only)
         uses: actions/setup-python@v5
         with:
           python-version: '3.12'
@@ -64,7 +64,7 @@ jobs:
       - name: Bundle Python source tree (app_src)
         run: node scripts/prepare-source.mjs
 
-      - name: Build bundled Python venv
+      - name: Build bundled Python runtime (relocatable standalone CPython)
         working-directory: desktop
         run: npm run build:python
 
@@ -72,8 +72,12 @@ jobs:
         working-directory: desktop
         run: npm run build:ffmpeg
 
-      - name: Pre-fetch models (uses the bundled venv python)
-        run: desktop/resources/python/bin/python3.12 scripts/prefetch_models.py desktop/resources small
+      - name: Pre-fetch models (uses the bundled Python runtime)
+        shell: bash
+        run: |
+          PY="$(node desktop/scripts/resolve-python.mjs desktop/resources/python)"
+          echo "using interpreter: $PY"
+          "$PY" scripts/prefetch_models.py desktop/resources/models small
 
       - name: Build macOS dmg
         working-directory: desktop
@@ -101,7 +105,7 @@ jobs:
         with:
           node-version: 22
 
-      - name: Set up Python 3.12 (used to build the bundled venv)
+      - name: Set up Python (for the build scripts only)
         uses: actions/setup-python@v5
         with:
           python-version: '3.12'
@@ -113,7 +117,7 @@ jobs:
       - name: Bundle Python source tree (app_src)
         run: node scripts/prepare-source.mjs
 
-      - name: Build bundled Python venv
+      - name: Build bundled Python runtime (relocatable standalone CPython)
         working-directory: desktop
         run: npm run build:python
 
@@ -121,8 +125,12 @@ jobs:
         working-directory: desktop
         run: npm run build:ffmpeg
 
-      - name: Pre-fetch models (uses the bundled venv python)
-        run: desktop/resources/python/Scripts/python.exe scripts/prefetch_models.py desktop/resources small
+      - name: Pre-fetch models (uses the bundled Python runtime)
+        shell: bash
+        run: |
+          PY="$(node desktop/scripts/resolve-python.mjs desktop/resources/python)"
+          echo "using interpreter: $PY"
+          "$PY" scripts/prefetch_models.py desktop/resources/models small
 
       - name: Build Windows installer
         working-directory: desktop

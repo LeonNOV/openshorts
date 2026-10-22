@@ -20,9 +20,27 @@ const root = path.resolve(__dirname, '..', '..');
 const bundle = process.argv[2] || path.join(root, 'desktop', 'resources');
 const isWin = process.platform === 'win32';
 
-const pyBin = isWin
-  ? path.join(bundle, 'python', 'python.exe')
-  : path.join(bundle, 'python', 'bin', 'python3.12');
+/**
+ * Locate the bundled interpreter.
+ *
+ * The bundle ships a RELOCATABLE standalone CPython whose layout is:
+ *   - POSIX   : python/bin/python3.12 (+ python, python3 symlinks)
+ *   - Windows : python/python.exe
+ * Probe the candidates rather than assuming one layout.
+ */
+function resolvePyBin() {
+  const isWin = process.platform === 'win32';
+  const dirs = isWin ? ['', 'bin', 'Scripts'] : ['bin', ''];
+  const names = isWin ? ['python.exe', 'python3.exe', 'python'] : ['python', 'python3', 'python3.12'];
+  for (const d of dirs) {
+    for (const n of names) {
+      const p = path.join(bundle, 'python', d, n);
+      if (fs.existsSync(p)) return p;
+    }
+  }
+  return null;
+}
+const pyBin = resolvePyBin();
 const ffmpeg = path.join(bundle, 'bin', isWin ? 'ffmpeg.exe' : 'ffmpeg');
 const ffprobe = path.join(bundle, 'bin', isWin ? 'ffprobe.exe' : 'ffprobe');
 const whisperModel = path.join(bundle, 'models', 'faster-whisper-small', 'model.bin');
@@ -34,13 +52,13 @@ function check(name, cond) {
   if (!cond) ok = false;
 }
 
-check(`python exists (${pyBin})`, fs.existsSync(pyBin));
+check(`python interpreter found (${pyBin || 'none'})`, !!pyBin);
 check(`ffmpeg exists (${ffmpeg})`, fs.existsSync(ffmpeg));
 check(`ffprobe exists (${ffprobe})`, fs.existsSync(ffprobe));
 check(`whisper model.bin exists (${whisperModel})`, fs.existsSync(whisperModel));
 check(`yolo weights exist (${yolo})`, fs.existsSync(yolo));
 
-if (ok && fs.existsSync(pyBin)) {
+if (ok && pyBin) {
   try {
     const appSrc = path.join(bundle, 'app_src');
     execFileSync(pyBin, ['-c',
@@ -50,6 +68,20 @@ if (ok && fs.existsSync(pyBin)) {
     console.log('PASS  bundled python imports the pipeline');
   } catch (e) {
     console.log('FAIL  bundled python import error');
+    ok = false;
+  }
+  // The two runtime-only paths an import check cannot prove: the legacy
+  // MediaPipe face detector and faster-whisper's VAD (which imports
+  // onnxruntime lazily, so a missing onnxruntime only fails at runtime).
+  try {
+    execFileSync(pyBin, ['-c',
+      'import mediapipe as mp; ' +
+      'mp.solutions.face_detection.FaceDetection(model_selection=1, min_detection_confidence=0.5); ' +
+      'import faster_whisper.vad, onnxruntime; print("runtime-ok")'],
+      { stdio: 'inherit' });
+    console.log('PASS  bundled python runtime paths (mediapipe face detection + whisper VAD)');
+  } catch (e) {
+    console.log('FAIL  bundled python runtime path error');
     ok = false;
   }
 }

@@ -37,10 +37,30 @@ function logBackend(label, chunk) {
   } catch (_) { /* best-effort */ }
 }
 
-/** Python executable inside the bundled resources. */
+/**
+ * Python executable inside the bundled resources.
+ *
+ * The bundle ships a RELOCATABLE standalone CPython (see
+ * desktop/scripts/fetch-python.mjs) whose layout is:
+ *   - POSIX   : resources/python/bin/python3.12 (+ python, python3 symlinks)
+ *   - Windows : resources/python/python.exe
+ * Probe the candidates instead of assuming one, so the shipped app starts
+ * regardless of which layout the bundle was built with.
+ */
 function pythonExe() {
   const res = process.resourcesPath;
-  return process.platform === 'win32'
+  const win = process.platform === 'win32';
+  const dirs = win ? ['', 'bin', 'Scripts'] : ['bin', ''];
+  const names = win ? ['python.exe', 'python3.exe', 'python'] : ['python', 'python3', 'python3.12'];
+  for (const d of dirs) {
+    for (const n of names) {
+      const p = path.join(res, 'python', d, n);
+      try { if (fs.existsSync(p)) return p; } catch (_) { /* keep probing */ }
+    }
+  }
+  // Nothing matched — return the conventional path so the spawn error message
+  // names the expected location instead of failing with "undefined".
+  return win
     ? path.join(res, 'python', 'python.exe')
     : path.join(res, 'python', 'bin', 'python3.12');
 }
