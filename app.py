@@ -80,6 +80,11 @@ QUALITY_GATE_MIN_HEIGHT = int(os.environ.get("QUALITY_GATE_MIN_HEIGHT", "720"))
 # failures were exactly this, one user retrying the same 24s video).
 MIN_SOURCE_SECONDS = int(os.environ.get("MIN_SOURCE_SECONDS", "45"))
 QUALITY_PROBE_SCRIPT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "quality_probe.py")
+# The job pipeline runs as a child process. Its script path must be ABSOLUTE:
+# a relative "main.py" resolves against the child's cwd, which is the data
+# directory in a desktop build (the bundled source tree lives in app_src, not
+# in the cwd) — the job then dies with "can't open file '.../main.py'".
+MAIN_SCRIPT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "main.py")
 
 # Server credentials the pipeline subprocesses (main.py, quality_probe.py) never
 # read: main.py and everything it imports use GEMINI_API_KEY / LLM_* / the
@@ -3310,7 +3315,7 @@ async def process_endpoint(
     # outside Docker is whatever interpreter happens to be first — not the venv
     # running this server. Every job then dies on `import cv2`. The quality
     # probe above already gets this right.
-    cmd = [sys.executable, "-u", "main.py"] # -u for unbuffered
+    cmd = [sys.executable, "-u", MAIN_SCRIPT] # -u for unbuffered
     env = child_env()
     if not paid_allowed:
         # Daily paid-proxy budget hit: this job runs on the free routes only.
