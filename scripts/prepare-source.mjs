@@ -47,7 +47,40 @@ function excluded(src) {
   return false;
 }
 
-fs.rmSync(dest, { recursive: true, force: true });
+/**
+ * Remove a directory tree, tolerating the failures Windows throws.
+ *
+ * rmSync fails with EPERM on read-only files, and EBUSY on a directory that
+ * something still holds open. Neither should stop a build: the copy below
+ * overwrites what it can, and a leftover file only matters if it is a stale
+ * copy of a file that no longer exists in the source tree.
+ */
+function removeTree(dir) {
+  try {
+    fs.rmSync(dir, { recursive: true, force: true, maxRetries: 3, retryDelay: 200 });
+  } catch (e) {
+    // Read-only leftovers: clear the attribute and try once more.
+    try {
+      const { chmodSync, readdirSync, statSync } = fs;
+      const clear = (p) => {
+        try { chmodSync(p, 0o700); } catch { /* not a file we can chmod */ }
+        let entries;
+        try { entries = readdirSync(p, { withFileTypes: true }); } catch { return; }
+        for (const ent of entries) {
+          const child = path.join(p, ent.name);
+          if (ent.isDirectory()) clear(child);
+          else { try { chmodSync(child, 0o600); } catch { /* ignore */ } }
+        }
+      };
+      clear(dir);
+      fs.rmSync(dir, { recursive: true, force: true, maxRetries: 3, retryDelay: 200 });
+    } catch (e2) {
+      console.warn(`[prepare-source] could not fully clean ${dir}: ${e2.message}`);
+    }
+  }
+}
+
+removeTree(dest);
 fs.mkdirSync(dest, { recursive: true });
 
 // Copy top-level entries individually so we never try to copy `root` into a

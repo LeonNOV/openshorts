@@ -149,7 +149,17 @@ execFileSync(pyBin, ['-c', runtimeVerify], { stdio: 'inherit' });
 const probeParent = path.join(root, 'desktop', 'resources');
 const relocated = path.join(probeParent, `.relocated-${process.pid}`);
 try {
-  fs.renameSync(pyDir, relocated);
+  try {
+    fs.renameSync(pyDir, relocated);
+  } catch (e) {
+    // On Windows a rename fails with EPERM/EBUSY when a file in the tree is
+    // still open (an antivirus scanner, a leftover python process). Say so
+    // plainly instead of letting a bare errno hide the real cause.
+    throw new Error(
+      `[build-python] could not move ${pyDir} aside for the relocation test: ${e.message}. ` +
+      'Close any running python processes and retry.',
+    );
+  }
   const movedBin = resolvePyBin(relocated);
   execFileSync(movedBin, ['-c',
     'import torch, ultralytics, mediapipe, faster_whisper, onnxruntime; ' +
