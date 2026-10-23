@@ -293,6 +293,40 @@ try {
     assert.ok(gyan >= 0, 'the gyan.dev source is gone entirely');
     assert.ok(gh < gyan, 'the throttled gyan.dev source is still tried first');
   });
+
+  // --- the CI runs the same script a developer runs ------------------------
+  check('the CI build jobs run the platform script, not a copy of the steps', () => {
+    const wf = path.resolve(desktopDir, '..', '.github', 'workflows', 'release.yml');
+    if (!fs.existsSync(wf)) {
+      console.log('      (no workflow file — skipped)');
+      return;
+    }
+    const src = fs.readFileSync(wf, 'utf8');
+    // The two jobs used to spell the build out as eleven steps each, which
+    // is how the CI and a developer's machine drifted apart. They now call
+    // the very script a developer runs.
+    assert.ok(
+      src.includes('node scripts/build-macos.mjs'),
+      'the macOS job does not run build-macos.mjs',
+    );
+    assert.ok(
+      src.includes('node scripts/build-windows.mjs'),
+      'the Windows job does not run build-windows.mjs',
+    );
+    // Each script must appear in its OWN job: the two jobs had identical
+    // step text once, and a blind replacement put the macOS script in the
+    // Windows job, which would have built a macOS bundle on Windows.
+    const macJob = src.slice(src.indexOf('  build-mac:'), src.indexOf('  build-win:'));
+    const winJob = src.slice(src.indexOf('  build-win:'), src.indexOf('  release:'));
+    assert.ok(
+      macJob.includes('build-macos.mjs') && !macJob.includes('build-windows.mjs'),
+      'the macOS job runs the wrong script',
+    );
+    assert.ok(
+      winJob.includes('build-windows.mjs') && !winJob.includes('build-macos.mjs'),
+      'the Windows job runs the wrong script',
+    );
+  });
 } finally {
   // Wait for the async checks before removing the temp directory they use.
   await Promise.all(pending);
