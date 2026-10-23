@@ -261,12 +261,9 @@ Flags:
       process.env.DW_WHISPER_SIZE || 'small',
     ], {
       cwd: repoRoot,
-      // huggingface.co is unreachable from mainland China and fails by
-      // hanging; the mirror serves the same layout.
-      env: {
-        HF_ENDPOINT: process.env.HF_ENDPOINT || 'https://hf-mirror.com',
-        HF_HUB_DISABLE_XET: process.env.HF_HUB_DISABLE_XET || '1',
-      },
+      // The endpoint is chosen by prefetch_models.py itself: it probes
+      // huggingface.co and only falls back to the mirror when the official
+      // host does not answer. Pin one with DW_HF_ENDPOINT.
     });
   }
 

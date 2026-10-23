@@ -172,16 +172,23 @@ try {
   });
 
   // --- the model prefetch endpoint ----------------------------------------
-  check('the model prefetch points huggingface_hub at a reachable endpoint', () => {
+  check('the model prefetch falls back to a mirror when the official host is unreachable', () => {
     const src = fs.readFileSync(
       path.resolve(desktopDir, '..', 'scripts', 'prefetch_models.py'), 'utf8',
     );
     // huggingface.co is unreachable from mainland China and fails by
-    // hanging, so a mirror has to be the default.
+    // hanging, so a mirror has to be there as a fallback.
     assert.ok(
       src.includes('hf-mirror.com'),
       'prefetch_models.py does not fall back to a mirror',
     );
+    // The official host is faster where it works, so it is probed first
+    // rather than being skipped in favour of the mirror.
+    assert.ok(
+      src.includes('huggingface.co') && src.includes('_reachable'),
+      'prefetch_models.py does not probe the official endpoint',
+    );
+    // The mirror does not serve the Xet CAS, so Xet has to be off there.
     assert.ok(
       src.includes('HF_HUB_DISABLE_XET'),
       'prefetch_models.py does not disable Xet for the mirror',

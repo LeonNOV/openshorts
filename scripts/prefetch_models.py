@@ -16,30 +16,64 @@ Override the size with ``DW_WHISPER_SIZE`` or the second argument.
 import os
 import shutil
 import sys
+import urllib.error
+import urllib.request
+
+OFFICIAL_ENDPOINT = "https://huggingface.co"
+MIRROR_ENDPOINT = "https://hf-mirror.com"
+# A tiny file that exists in every model repo, used to see whether the host
+# answers at all. HEAD is enough and does not pull the weights.
+PROBE_PATH = "api/models/Systran/faster-whisper-small"
+
+
+def _reachable(endpoint: str, timeout: float = 8.0) -> bool:
+    """True if the endpoint answers a request within the timeout."""
+    try:
+        req = urllib.request.Request(
+            f"{endpoint}/{PROBE_PATH}",
+            headers={"User-Agent": "DW-shorts-build"},
+        )
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return resp.status < 400
+    except urllib.error.HTTPError as e:
+        # A redirect or an auth challenge still proves the host is reachable.
+        return e.code in (301, 302, 307, 308, 401, 403)
+    except Exception:
+        return False
 
 
 def configure_hf_endpoint() -> None:
-    """Point huggingface_hub at a reachable endpoint.
+    """Point huggingface_hub at an endpoint that actually answers.
 
     ``huggingface.co`` is unreachable from mainland China, and the failure
     mode is a long hang rather than a clear error. ``hf-mirror.com`` serves
-    the same layout, so it is the default; set ``DW_HF_ENDPOINT`` (or
-    ``HF_ENDPOINT``) to use a different one, including the official host on a
-    machine that can reach it.
+    the same layout, so it is the fallback.
+
+    But the official host is reachable from plenty of machines (CI runners,
+    and any desktop with a working proxy), and it is the faster of the two.
+    So probe it first and only fall back to the mirror when it does not
+    answer. Set ``DW_HF_ENDPOINT`` to pin a specific one.
 
     ``HF_HUB_DISABLE_XET`` is required with the mirror: the mirror serves the
-    metadata but not ``cas-server.xethub.hf.co``, so Xet answers 401.
+    metadata but not ``cas-server.xethub.hf.co``, so Xet answers 401. The
+    official host does not need it and is faster with it enabled.
     """
-    endpoint = os.environ.get("DW_HF_ENDPOINT") or os.environ.get("HF_ENDPOINT")
-    if not endpoint:
-        endpoint = "https://hf-mirror.com"
-        os.environ["HF_ENDPOINT"] = endpoint
-        # Only the mirror needs this; leaving it on for the official host
-        # would needlessly slow the download down.
-        os.environ.setdefault("HF_HUB_DISABLE_XET", "1")
-    else:
-        os.environ["HF_ENDPOINT"] = endpoint
-    print(f"huggingface endpoint: {os.environ['HF_ENDPOINT']}")
+    pinned = os.environ.get("DW_HF_ENDPOINT") or os.environ.get("HF_ENDPOINT")
+    if pinned:
+        os.environ["HF_ENDPOINT"] = pinned
+        if "hf-mirror" in pinned:
+            os.environ.setdefault("HF_HUB_DISABLE_XET", "1")
+        print(f"huggingface endpoint: {pinned} (pinned)")
+        return
+
+    if _reachable(OFFICIAL_ENDPOINT):
+        os.environ["HF_ENDPOINT"] = OFFICIAL_ENDPOINT
+        print(f"huggingface endpoint: {OFFICIAL_ENDPOINT}")
+        return
+
+    print(f"huggingface.co is not reachable, falling back to {MIRROR_ENDPOINT}")
+    os.environ["HF_ENDPOINT"] = MIRROR_ENDPOINT
+    os.environ.setdefault("HF_HUB_DISABLE_XET", "1")
 
 
 def main() -> None:
