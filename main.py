@@ -2331,7 +2331,14 @@ if __name__ == '__main__':
     def _report_job_cpu():
         """CPU time of the whole job (this process + every ffmpeg it waited
         for) for app.py's log, to compare pipeline versions per job."""
-        import resource
+        try:
+            import resource
+        except ImportError:
+            # `resource` is a Unix-only module; Windows has no getrusage.
+            # There is nothing to report there, and an atexit handler that
+            # raises only prints a traceback — but the job would then be
+            # missing its JOB_CPU line entirely.
+            return
         own = resource.getrusage(resource.RUSAGE_SELF)
         kids = resource.getrusage(resource.RUSAGE_CHILDREN)
         py_s = own.ru_utime + own.ru_stime

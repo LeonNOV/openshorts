@@ -2685,6 +2685,32 @@ def _lower_priority():
         os.nice(n)
 
 
+def _job_popen_kwargs():
+    """Platform-specific options for spawning a job process.
+
+    POSIX lowers the priority with os.nice() from a preexec_fn. Windows has
+    neither half of that: subprocess.Popen refuses preexec_fn there outright
+    ("preexec_fn is not supported on Windows platforms"), and os.nice() does
+    not exist at all — it is a POSIX-only function.
+
+    The Windows equivalent of "run this a bit below the others" is a
+    creation flag, so the intent survives on both platforms instead of
+    being dropped on Windows.
+
+    CREATE_NO_WINDOW comes with it: without it Windows opens a console
+    window for every child process, and the desktop app would flash a
+    black box for each ffmpeg the pipeline runs.
+    """
+    if os.name == 'posix':
+        return {'preexec_fn': _lower_priority}
+    return {
+        'creationflags': (
+            getattr(subprocess, 'BELOW_NORMAL_PRIORITY_CLASS', 0x00004000)
+            | getattr(subprocess, 'CREATE_NO_WINDOW', 0x08000000)
+        ),
+    }
+
+
 async def run_job(job_id, job_data):
     """Executes the subprocess for a specific job."""
 
@@ -2703,7 +2729,7 @@ async def run_job(job_id, job_data):
             stderr=subprocess.STDOUT, # Merge stderr to stdout
             env=env,
             cwd=os.getcwd(),
-            preexec_fn=_lower_priority,
+            **_job_popen_kwargs(),
         )
         
         # We need to capture logs in a thread because Popen isn't async
