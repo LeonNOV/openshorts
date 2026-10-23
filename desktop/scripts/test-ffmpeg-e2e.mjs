@@ -169,13 +169,14 @@ try {
   // source, so the test rewrites it — the rest of the script runs untouched.
   const scriptPath = path.join(scriptsDir, 'build-ffmpeg.mjs');
   let src = fs.readFileSync(scriptPath, 'utf8');
+  // The source list is a list of {url, name} entries.
   src = src.replace(
     /const winUrls = \[[\s\S]*?\];/,
-    `const winUrls = [\n  'http://127.0.0.1:${port}/ffmpeg.zip',\n];`,
+    `const winUrls = [\n  { url: 'http://127.0.0.1:${port}/ffmpeg.zip', name: 'ffmpeg.zip' },\n];`,
   );
   src = src.replace(
     /const macUrls = \[[\s\S]*?\];/,
-    `const macUrls = [\n  'http://127.0.0.1:${port}/ffmpeg.zip',\n];`,
+    `const macUrls = [\n  { url: 'http://127.0.0.1:${port}/ffmpeg.zip', name: 'ffmpeg.zip' },\n];`,
   );
   fs.writeFileSync(scriptPath, src);
 

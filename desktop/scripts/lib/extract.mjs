@@ -1,19 +1,20 @@
 /**
- * Cross-platform zip extraction.
+ * Cross-platform archive extraction.
  *
  * Windows has no `unzip`, and the CI runner's PowerShell 7 (`pwsh`) is NOT
  * what a normal Windows installation has — a user machine only has Windows
  * PowerShell 5.1 (`powershell.exe`). A build script that shells out to
  * `pwsh` therefore works on the runner and fails on the user's desktop.
  *
- * Candidates, in order of preference:
+ * Candidates for a zip, in order of preference:
  *   1. tar.exe  — bsdtar ships with Windows 10 1803+ and reads zip files
  *   2. pwsh     — PowerShell 7, Expand-Archive
  *   3. powershell — Windows PowerShell 5.1, Expand-Archive
  *
  * Usage:
- *   import { extractZip } from './lib/extract.mjs';
+ *   import { extractZip, extractTar } from './lib/extract.mjs';
  *   extractZip('/tmp/x.zip', '/tmp/out');
+ *   extractTar('/tmp/x.tar.xz', '/tmp/out');
  */
 import { execFileSync, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
@@ -25,6 +26,17 @@ const isWin = process.platform === 'win32';
 function hasCommand(cmd) {
   const probe = spawnSync(cmd, ['--version'], { stdio: 'ignore' });
   return !probe.error;
+}
+
+/**
+ * Extract a tar archive (tar, tar.gz, tar.xz) into `dest`.
+ *
+ * bsdtar reads every one of those, and it is present on macOS, on Linux and
+ * on Windows 10 1803+ — so this is the one method that works everywhere.
+ */
+export function extractTar(archive, dest) {
+  fs.mkdirSync(dest, { recursive: true });
+  execFileSync('tar', ['-xf', archive, '-C', dest], { stdio: 'inherit' });
 }
 
 /**

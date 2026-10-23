@@ -284,14 +284,32 @@ try {
     const src = fs.readFileSync(path.join(desktopDir, 'scripts', 'build-ffmpeg.mjs'), 'utf8');
     const i = src.indexOf('const winUrls');
     const block = src.slice(i, src.indexOf('];', i));
-    // gyan.dev served the essentials zip at ~10 KB/s on a China-connected
-    // Windows machine, while the same build on GitHub came down at ordinary
-    // speed. GitHub has to be tried first.
+    // Measured on a China-connected Windows machine: gyan.dev served the
+    // essentials zip at ~10 KB/s, GitHub at ~120 KB/s and the npmmirror
+    // (Alibaba's CDN) at ~1 MB/s. The fastest one has to be tried first.
+    const mirror = block.indexOf('npmmirror');
     const gh = block.indexOf('github.com');
     const gyan = block.indexOf('gyan.dev');
-    assert.ok(gh >= 0, 'no GitHub-hosted ffmpeg source');
+    assert.ok(mirror >= 0, 'the npmmirror source is missing');
+    assert.ok(gh >= 0, 'the GitHub source is gone entirely');
     assert.ok(gyan >= 0, 'the gyan.dev source is gone entirely');
+    assert.ok(mirror < gh, 'the throttled GitHub source is still tried before the mirror');
     assert.ok(gh < gyan, 'the throttled gyan.dev source is still tried first');
+  });
+
+  check('the python runtime is fetched from a mirror too', () => {
+    const src = fs.readFileSync(path.join(desktopDir, 'scripts', 'fetch-python.mjs'), 'utf8');
+    // The npmmirror mirrors the python-build-standalone releases verbatim, and
+    // it stays reachable when GitHub does not.
+    assert.ok(
+      src.includes('npmmirror') && src.includes('python-build-standalone'),
+      'fetch-python.mjs does not use the npmmirror',
+    );
+    // And there has to be a fallback.
+    assert.ok(
+      src.includes('github.com/astral-sh/python-build-standalone'),
+      'fetch-python.mjs lost the GitHub fallback',
+    );
   });
 
   // --- the archive must survive the cleanup --------------------------------
@@ -302,12 +320,12 @@ try {
     // the file it was about to unpack.
     const src = fs.readFileSync(path.join(desktopDir, 'scripts', 'build-ffmpeg.mjs'), 'utf8');
 
-    // Walk every download → extract pair and make sure nothing removes the
+    // Walk every download → unpack pair and make sure nothing removes the
     // archive's directory in between. (Removing it AFTER the extraction is
     // fine — that is the final cleanup.)
-    const pairs = [...src.matchAll(/await downloadTo\(url, zip[^)]*\);([\s\S]*?)extractZip\(zip,/g)];
-    assert.ok(pairs.length >= 1, 'no download/extract pair found');
-    for (const [, between] of pairs) {
+    const pairs = [...src.matchAll(/await downloadTo\(url, (\w+)[^)]*\);([\s\S]*?)unpack\(\1,/g)];
+    assert.ok(pairs.length >= 1, 'no download/unpack pair found');
+    for (const [, , between] of pairs) {
       assert.ok(
         !/rmSync\(\s*downloadDir/.test(between),
         'the archive is deleted between the download and the extraction',
@@ -315,9 +333,8 @@ try {
     }
     // The bug was specifically: the extraction directory was the archive's
     // directory, so cleaning one cleaned the other.
-    const zipDirs = [...src.matchAll(/path\.join\((\w+),\s*'ff(?:mpeg|probe)\.zip'\)/g)]
-      .map((m) => m[1]);
-    const extractDirs = [...src.matchAll(/extractZip\(zip,\s*(\w+)\)/g)].map((m) => m[1]);
+    const zipDirs = [...src.matchAll(/path\.join\((\w+),\s*name\)/g)].map((m) => m[1]);
+    const extractDirs = [...src.matchAll(/unpack\(\w+,\s*(\w+)\)/g)].map((m) => m[1]);
     for (const z of zipDirs) {
       assert.ok(
         !extractDirs.includes(z),

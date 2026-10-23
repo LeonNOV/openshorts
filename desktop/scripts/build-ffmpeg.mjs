@@ -21,7 +21,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { download } from './lib/download.mjs';
-import { extractZip } from './lib/extract.mjs';
+import { extractTar, extractZip } from './lib/extract.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(__dirname, '..', '..');
@@ -56,21 +56,43 @@ function existingBinaries() {
 
 // Candidate sources, most preferred first.
 //
-// On Windows the GitHub-hosted build comes FIRST, not the gyan.dev one.
-// Measured on a China-connected Windows machine: gyan.dev served the
-// essentials zip at ~10 KB/s (3 hours for a 90 MB file), while the same
-// file on GitHub came down at ordinary GitHub speed. gyan.dev stays in the
-// list as a fallback for when GitHub is blocked.
+// The npmmirror (Alibaba's CDN) comes first on Windows. Measured on a
+// China-connected Windows machine:
+//
+//   npmmirror  ffmpeg-builds   1069 KB/s
+//   GitHub     ffmpeg-builds    100-130 KB/s
+//   gyan.dev   essentials zip    10-26 KB/s
+//
+// The same file is an order of magnitude faster from the mirror. The
+// archive there is a .tar.xz rather than a .zip; bsdtar reads it.
+//
+// The GitHub and gyan.dev entries stay as fallbacks for when the mirror is
+// unreachable.
+//
+// Each entry is {url, name}: `name` is the local file name, and its
+// extension decides how the archive is unpacked.
 const macUrls = [
-  'https://www.osxexperts.net/ffmpeg80arm.zip',
-  'https://www.osxexperts.net/ffmpeg7arm.zip',
-  'https://www.osxexperts.net/ffmpeg6arm.zip',
+  { url: 'https://www.osxexperts.net/ffmpeg80arm.zip', name: 'ffmpeg.zip' },
+  { url: 'https://www.osxexperts.net/ffmpeg7arm.zip', name: 'ffmpeg.zip' },
+  { url: 'https://www.osxexperts.net/ffmpeg6arm.zip', name: 'ffmpeg.zip' },
 ];
 const winUrls = [
-  'https://github.com/GyanD/codexffmpeg/releases/download/7.1/ffmpeg-7.1-essentials_build.zip',
-  'https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip',
-  'https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip',
-  'https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-full_build.zip',
+  {
+    url: 'https://registry.npmmirror.com/-/binary/ffmpeg-builds/v8.1.3/ffmpeg-8.1.3-win32-x64-gpl.tar.xz',
+    name: 'ffmpeg.tar.xz',
+  },
+  {
+    url: 'https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip',
+    name: 'ffmpeg.zip',
+  },
+  {
+    url: 'https://github.com/GyanD/codexffmpeg/releases/download/7.1/ffmpeg-7.1-essentials_build.zip',
+    name: 'ffmpeg.zip',
+  },
+  {
+    url: 'https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip',
+    name: 'ffmpeg.zip',
+  },
 ];
 // osxexperts ships ffmpeg and ffprobe as SEPARATE zips; the Windows builds
 // ship both in one archive.
@@ -78,9 +100,9 @@ const separateProbe = !isWin;
 const probeUrls = isWin
   ? []
   : [
-    'https://www.osxexperts.net/ffprobe80arm.zip',
-    'https://www.osxexperts.net/ffprobe7arm.zip',
-    'https://www.osxexperts.net/ffprobe6arm.zip',
+    { url: 'https://www.osxexperts.net/ffprobe80arm.zip', name: 'ffprobe.zip' },
+    { url: 'https://www.osxexperts.net/ffprobe7arm.zip', name: 'ffprobe.zip' },
+    { url: 'https://www.osxexperts.net/ffprobe6arm.zip', name: 'ffprobe.zip' },
   ];
 
 const urls = isWin ? winUrls : macUrls;
@@ -150,9 +172,24 @@ function install(src, dest) {
   try { fs.chmodSync(dest, 0o755); } catch { /* Windows ignores POSIX modes */ }
 }
 
+/**
+ * Unpack an archive, choosing the method by its extension.
+ *
+ * A .zip goes through the zip path (which has the Windows-specific
+ * fallbacks); a .tar.xz goes through tar, which bsdtar reads everywhere.
+ */
+function unpack(archive, dest) {
+  if (/\.(tar\.xz|tar\.gz|tgz|tar)$/i.test(archive)) {
+    extractTar(archive, dest);
+  } else {
+    extractZip(archive, dest);
+  }
+}
+
 let installed = 0;
-for (const url of urls) {
-  const zip = path.join(downloadDir, 'ffmpeg.zip');
+for (const source of urls) {
+  const { url, name } = source;
+  const archive = path.join(downloadDir, name);
   try {
     console.log(`[build-ffmpeg] downloading ${url}`);
     // Clean the extraction directory BEFORE downloading: the archive lives
@@ -160,8 +197,8 @@ for (const url of urls) {
     // delete the file that was just downloaded.
     fs.rmSync(extractDir, { recursive: true, force: true });
     fs.mkdirSync(extractDir, { recursive: true });
-    await downloadTo(url, zip, 'ffmpeg');
-    extractZip(zip, extractDir);
+    await downloadTo(url, archive, 'ffmpeg');
+    unpack(archive, extractDir);
     const ff = findExe(extractDir, 'ffmpeg');
     if (!ff) throw new Error('ffmpeg not found in the archive');
     install(ff, path.join(binDir, ffName));
@@ -179,14 +216,15 @@ if (!installed) throw new Error('[build-ffmpeg] could not obtain ffmpeg from any
 
 if (separateProbe && !fs.existsSync(path.join(binDir, fpName))) {
   let ok = false;
-  for (const url of probeUrls) {
-    const zip = path.join(downloadDir, 'ffprobe.zip');
+  for (const source of probeUrls) {
+    const { url, name } = source;
+    const archive = path.join(downloadDir, name);
     try {
       console.log(`[build-ffmpeg] downloading ${url}`);
       fs.rmSync(extractDir, { recursive: true, force: true });
       fs.mkdirSync(extractDir, { recursive: true });
-      await downloadTo(url, zip, 'ffprobe');
-      extractZip(zip, extractDir);
+      await downloadTo(url, archive, 'ffprobe');
+      unpack(archive, extractDir);
       const fp = findExe(extractDir, 'ffprobe');
       if (!fp) throw new Error('ffprobe not found in the archive');
       install(fp, path.join(binDir, fpName));
