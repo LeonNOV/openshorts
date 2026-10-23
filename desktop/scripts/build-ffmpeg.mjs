@@ -84,8 +84,12 @@ const probeUrls = isWin
   ];
 
 const urls = isWin ? winUrls : macUrls;
-const workDir = path.join(binDir, '.download');
-fs.mkdirSync(workDir, { recursive: true });
+// The archive and the extracted files live in SEPARATE directories. Cleaning
+// the extraction (which happens between attempts, and inside extractZip when
+// a method fails) must never remove the archive that was just downloaded.
+const downloadDir = path.join(binDir, '.download');
+const extractDir = path.join(binDir, '.extract');
+fs.mkdirSync(downloadDir, { recursive: true });
 
 const existing = existingBinaries();
 if (existing) {
@@ -148,22 +152,23 @@ function install(src, dest) {
 
 let installed = 0;
 for (const url of urls) {
-  const zip = path.join(workDir, 'ffmpeg.zip');
+  const zip = path.join(downloadDir, 'ffmpeg.zip');
   try {
     console.log(`[build-ffmpeg] downloading ${url}`);
+    // Clean the extraction directory BEFORE downloading: the archive lives
+    // in its own directory precisely so that cleaning the extraction cannot
+    // delete the file that was just downloaded.
+    fs.rmSync(extractDir, { recursive: true, force: true });
+    fs.mkdirSync(extractDir, { recursive: true });
     await downloadTo(url, zip, 'ffmpeg');
-    // Start from a clean directory: a previous attempt may have left a
-    // partial extraction behind, and findExe would pick up the wrong file.
-    fs.rmSync(workDir, { recursive: true, force: true });
-    fs.mkdirSync(workDir, { recursive: true });
-    extractZip(zip, workDir);
-    const ff = findExe(workDir, 'ffmpeg');
+    extractZip(zip, extractDir);
+    const ff = findExe(extractDir, 'ffmpeg');
     if (!ff) throw new Error('ffmpeg not found in the archive');
     install(ff, path.join(binDir, ffName));
     installed++;
-    // The Windows archive (gyan.dev) ships BOTH binaries — take ffprobe from
-    // the same extraction rather than fetching it again.
-    const fp = findExe(workDir, 'ffprobe');
+    // The Windows archives ship BOTH binaries — take ffprobe from the same
+    // extraction rather than fetching it again.
+    const fp = findExe(extractDir, 'ffprobe');
     if (fp) install(fp, path.join(binDir, fpName));
     break;
   } catch (e) {
@@ -175,14 +180,14 @@ if (!installed) throw new Error('[build-ffmpeg] could not obtain ffmpeg from any
 if (separateProbe && !fs.existsSync(path.join(binDir, fpName))) {
   let ok = false;
   for (const url of probeUrls) {
-    const zip = path.join(workDir, 'ffprobe.zip');
+    const zip = path.join(downloadDir, 'ffprobe.zip');
     try {
       console.log(`[build-ffmpeg] downloading ${url}`);
+      fs.rmSync(extractDir, { recursive: true, force: true });
+      fs.mkdirSync(extractDir, { recursive: true });
       await downloadTo(url, zip, 'ffprobe');
-      fs.rmSync(workDir, { recursive: true, force: true });
-      fs.mkdirSync(workDir, { recursive: true });
-      extractZip(zip, workDir);
-      const fp = findExe(workDir, 'ffprobe');
+      extractZip(zip, extractDir);
+      const fp = findExe(extractDir, 'ffprobe');
       if (!fp) throw new Error('ffprobe not found in the archive');
       install(fp, path.join(binDir, fpName));
       ok = true;
@@ -199,7 +204,8 @@ if (separateProbe && !fs.existsSync(path.join(binDir, fpName))) {
 for (const f of fs.readdirSync(binDir)) {
   if (f.startsWith('._')) fs.rmSync(path.join(binDir, f), { force: true });
 }
-try { fs.rmSync(workDir, { recursive: true, force: true }); } catch { /* locked */ }
+try { fs.rmSync(downloadDir, { recursive: true, force: true }); } catch { /* locked */ }
+try { fs.rmSync(extractDir, { recursive: true, force: true }); } catch { /* locked */ }
 
 console.log('[build-ffmpeg] versions:');
 execFileSync(path.join(binDir, ffName), ['-version'], { stdio: 'inherit' });

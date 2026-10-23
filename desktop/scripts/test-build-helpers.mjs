@@ -294,6 +294,38 @@ try {
     assert.ok(gh < gyan, 'the throttled gyan.dev source is still tried first');
   });
 
+  // --- the archive must survive the cleanup --------------------------------
+  check('cleaning the extraction cannot delete the archive that was downloaded', () => {
+    // The build downloaded the 191 MB archive and then failed to extract it:
+    // "tar: Error opening archive: Failed to open .../ffmpeg.zip". The
+    // cleanup of the extraction directory ran AFTER the download and wiped
+    // the file it was about to unpack.
+    const src = fs.readFileSync(path.join(desktopDir, 'scripts', 'build-ffmpeg.mjs'), 'utf8');
+
+    // Walk every download → extract pair and make sure nothing removes the
+    // archive's directory in between. (Removing it AFTER the extraction is
+    // fine — that is the final cleanup.)
+    const pairs = [...src.matchAll(/await downloadTo\(url, zip[^)]*\);([\s\S]*?)extractZip\(zip,/g)];
+    assert.ok(pairs.length >= 1, 'no download/extract pair found');
+    for (const [, between] of pairs) {
+      assert.ok(
+        !/rmSync\(\s*downloadDir/.test(between),
+        'the archive is deleted between the download and the extraction',
+      );
+    }
+    // The bug was specifically: the extraction directory was the archive's
+    // directory, so cleaning one cleaned the other.
+    const zipDirs = [...src.matchAll(/path\.join\((\w+),\s*'ff(?:mpeg|probe)\.zip'\)/g)]
+      .map((m) => m[1]);
+    const extractDirs = [...src.matchAll(/extractZip\(zip,\s*(\w+)\)/g)].map((m) => m[1]);
+    for (const z of zipDirs) {
+      assert.ok(
+        !extractDirs.includes(z),
+        `the archive and the extraction share the directory ${z}`,
+      );
+    }
+  });
+
   // --- the CI runs the same script a developer runs ------------------------
   check('the CI build jobs run the platform script, not a copy of the steps', () => {
     const wf = path.resolve(desktopDir, '..', '.github', 'workflows', 'release.yml');

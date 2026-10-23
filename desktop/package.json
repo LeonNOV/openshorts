@@ -12,6 +12,7 @@
     "prefetch:models": "python ../scripts/prefetch_models.py resources/models small",
     "verify:bundle": "node scripts/verify-bundle.mjs",
     "test:build": "node scripts/test-build-helpers.mjs",
+    "test:ffmpeg": "node scripts/test-ffmpeg-e2e.mjs",
     "prepare:source": "node ../scripts/prepare-source.mjs",
     "build:mac": "node scripts/build-macos.mjs",
     "build:win": "node scripts/build-windows.mjs",

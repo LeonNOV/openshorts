@@ -126,7 +126,12 @@ function downloadOnce(url, dest, label, minBytesPerSecond) {
             console.log(`  ${label}: ${(got / 1048576).toFixed(1)} MB${pct}  ${speed}`);
             // Give up on a transfer that is working but hopelessly slow, so
             // the caller can try the next source instead of waiting for hours.
-            if (minBytesPerSecond && rate < minBytesPerSecond) {
+            //
+            // Only judge after a couple of seconds: the first chunk can
+            // arrive in the same millisecond as the request, and a rate
+            // measured over zero time reads as zero — which would reject the
+            // fastest downloads of all.
+            if (minBytesPerSecond && elapsed >= 2 && rate < minBytesPerSecond) {
               const err = new Error(
                 `too slow: ${rate.toFixed(0)} KB/s is below the ${minBytesPerSecond} KB/s floor`,
               );
