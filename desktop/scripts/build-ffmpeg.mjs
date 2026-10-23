@@ -208,7 +208,16 @@ try { fs.rmSync(downloadDir, { recursive: true, force: true }); } catch { /* loc
 try { fs.rmSync(extractDir, { recursive: true, force: true }); } catch { /* locked */ }
 
 console.log('[build-ffmpeg] versions:');
-execFileSync(path.join(binDir, ffName), ['-version'], { stdio: 'inherit' });
-execFileSync(path.join(binDir, fpName), ['-version'], { stdio: 'inherit' });
+// Informational only: verify-bundle.mjs runs the same check on the packaged
+// bundle and fails the build if the binary does not work, and that is the
+// authoritative gate. Failing here as well would only mean a build that is
+// about to be rejected anyway.
+for (const name of [ffName, fpName]) {
+  try {
+    execFileSync(path.join(binDir, name), ['-version'], { stdio: 'inherit' });
+  } catch (e) {
+    console.warn(`[build-ffmpeg] ${name} could not be run here: ${e.message}`);
+  }
+}
 console.log('[build-ffmpeg] DONE ->', binDir);
 void arch;

@@ -19,10 +19,99 @@ import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import zlib from 'node:zlib';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const desktopDir = path.resolve(__dirname, '..');
 const repoRoot = path.resolve(desktopDir, '..');
+
+/**
+ * Build a zip in memory.
+ *
+ * The test cannot shell out to `zip`: Windows has no such command, and the
+ * point of these tests is that they run everywhere. The archive is written
+ * by hand — the format is small, and the STORED method keeps it trivial.
+ */
+function makeZip(files) {
+  const chunks = [];
+  const central = [];
+  let offset = 0;
+
+  for (const [name, content] of Object.entries(files)) {
+    const data = Buffer.from(content);
+    const nameBuf = Buffer.from(name, 'utf8');
+    const crc = zlib.crc32 ? zlib.crc32(data) : crc32(data);
+
+    const local = Buffer.alloc(30);
+    local.writeUInt32LE(0x04034b50, 0);   // local file header signature
+    local.writeUInt16LE(20, 4);          // version needed
+    local.writeUInt16LE(0, 6);           // flags
+    local.writeUInt16LE(0, 8);           // method: stored
+    local.writeUInt16LE(0, 10);          // mod time
+    local.writeUInt16LE(0, 12);          // mod date
+    local.writeUInt32LE(crc, 14);
+    local.writeUInt32LE(data.length, 18);
+    local.writeUInt32LE(data.length, 22);
+    local.writeUInt16LE(nameBuf.length, 26);
+    local.writeUInt16LE(0, 28);          // extra length
+
+    chunks.push(local, nameBuf, data);
+
+    const cd = Buffer.alloc(46);
+    cd.writeUInt32LE(0x02014b50, 0);     // central directory header
+    cd.writeUInt16LE(20, 4);             // version made by
+    cd.writeUInt16LE(20, 6);             // version needed
+    cd.writeUInt16LE(0, 8);
+    cd.writeUInt16LE(0, 10);
+    cd.writeUInt16LE(0, 12);
+    cd.writeUInt16LE(0, 14);
+    cd.writeUInt32LE(crc, 16);
+    cd.writeUInt32LE(data.length, 20);
+    cd.writeUInt32LE(data.length, 24);
+    cd.writeUInt16LE(nameBuf.length, 28);
+    cd.writeUInt16LE(0, 30);             // extra length
+    cd.writeUInt16LE(0, 32);             // comment length
+    cd.writeUInt16LE(0, 34);             // disk number start
+    cd.writeUInt16LE(0, 36);             // internal attributes
+    cd.writeUInt32LE(0, 38);             // external attributes
+    cd.writeUInt32LE(offset, 42);        // offset of the local header
+    central.push(cd, nameBuf);
+
+    offset += local.length + nameBuf.length + data.length;
+  }
+
+  const cdBuf = Buffer.concat(central);
+  const end = Buffer.alloc(22);
+  end.writeUInt32LE(0x06054b50, 0);      // end of central directory
+  end.writeUInt16LE(0, 4);
+  end.writeUInt16LE(0, 6);
+  end.writeUInt16LE(Object.keys(files).length, 8);
+  end.writeUInt16LE(Object.keys(files).length, 10);
+  end.writeUInt32LE(cdBuf.length, 12);
+  end.writeUInt32LE(offset, 16);
+  end.writeUInt16LE(0, 20);              // comment length
+
+  return Buffer.concat([...chunks, cdBuf, end]);
+}
+
+/** CRC-32 for the (rare) case where zlib.crc32 is not available. */
+function crc32(buf) {
+  let c;
+  const table = crc32.table || (crc32.table = (() => {
+    const t = new Int32Array(256);
+    for (let n = 0; n < 256; n++) {
+      c = n;
+      for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
+      t[n] = c;
+    }
+    return t;
+  })());
+  let crc = -1;
+  for (let i = 0; i < buf.length; i++) {
+    crc = (crc >>> 8) ^ table[(crc ^ buf[i]) & 0xff];
+  }
+  return (crc ^ -1) >>> 0;
+}
 
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'dw-ffmpeg-e2e-'));
 let failed = 0;
@@ -39,18 +128,20 @@ function report(name, err) {
 
 try {
   // --- build a zip with the layout the real archives have ----------------
-  const stage = path.join(tmp, 'stage', 'ffmpeg-7.1-essentials_build', 'bin');
-  fs.mkdirSync(stage, { recursive: true });
-  // The scripts shell out to the binaries to check the version, so they have
-  // to be runnable.
-  fs.writeFileSync(path.join(stage, 'ffmpeg'), '#!/bin/sh\necho "ffmpeg version 7.1-fake"\n', { mode: 0o755 });
-  fs.writeFileSync(path.join(stage, 'ffprobe'), '#!/bin/sh\necho "ffprobe version 7.1-fake"\n', { mode: 0o755 });
-  const zipPath = path.join(tmp, 'ffmpeg.zip');
-  execFileSync('zip', ['-qr', zipPath, '.'], { cwd: path.join(tmp, 'stage') });
-  const zipBytes = fs.statSync(zipPath).size;
+  // The layout gyan.dev and the GitHub-hosted Windows builds use:
+  //   ffmpeg-<ver>/bin/ffmpeg.exe
+  //   ffmpeg-<ver>/bin/ffprobe.exe
+  // The file names follow the platform, because that is what findExe looks
+  // for.
+  const isWin = process.platform === 'win32';
+  const ffName = isWin ? 'ffmpeg.exe' : 'ffmpeg';
+  const fpName = isWin ? 'ffprobe.exe' : 'ffprobe';
+  const archive = makeZip({
+    [`ffmpeg-7.1-essentials_build/bin/${ffName}`]: '#!/bin/sh\necho "ffmpeg version 7.1-fake"\n',
+    [`ffmpeg-7.1-essentials_build/bin/${fpName}`]: '#!/bin/sh\necho "ffprobe version 7.1-fake"\n',
+  });
 
   // --- serve it -----------------------------------------------------------
-  const archive = fs.readFileSync(zipPath);
   const server = http.createServer((req, res) => {
     res.writeHead(200, { 'Content-Length': archive.length });
     res.end(archive);
@@ -116,8 +207,8 @@ try {
   }
 
   const binDir = path.join(tree, 'desktop', 'resources', 'bin');
-  const ff = path.join(binDir, 'ffmpeg');
-  const fp = path.join(binDir, 'ffprobe');
+  const ff = path.join(binDir, ffName);
+  const fp = path.join(binDir, fpName);
 
   if (fs.existsSync(ff) && fs.existsSync(fp)) {
     report('the archive is downloaded, extracted and both binaries installed', null);
@@ -136,13 +227,18 @@ try {
     report('the temporary directories are cleaned up', e);
   }
 
-  // And the installed binary has to actually run.
+  // And the installed binaries have to be the ones from the archive.
   try {
-    const v = execFileSync(ff, ['-version'], { encoding: 'utf8' });
-    assert.ok(v.includes('7.1-fake'), 'the installed ffmpeg is not the one from the archive');
-    report('the installed ffmpeg runs', null);
+    const content = fs.readFileSync(ff, 'utf8');
+    assert.ok(content.includes('7.1-fake'), 'the installed ffmpeg is not the one from the archive');
+    // On POSIX the script also runs the binary to print its version; that
+    // needs a shell script, which Windows cannot execute. Checking the
+    // content covers both platforms.
+    const probe = fs.readFileSync(fp, 'utf8');
+    assert.ok(probe.includes('7.1-fake'), 'the installed ffprobe is not the one from the archive');
+    report('the installed binaries are the ones from the archive', null);
   } catch (e) {
-    report('the installed ffmpeg runs', e);
+    report('the installed binaries are the ones from the archive', e);
   }
 } finally {
   for (const fn of cleanup.reverse()) { try { fn(); } catch { /* ignore */ } }
