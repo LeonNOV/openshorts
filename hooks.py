@@ -22,7 +22,13 @@ def _truncate_bytes(text, max_bytes):
     return encoded[:max_bytes].decode("utf-8", "ignore")
 
 FONT_URL = "https://github.com/googlefonts/noto-fonts/raw/main/hinted/ttf/NotoSerif/NotoSerif-Bold.ttf"
-FONT_DIR = "fonts"
+# Resolved from this module's own directory, NOT from the working directory.
+#
+# The desktop app starts the backend from the app bundle, where the working
+# directory is not the source tree, so a relative "fonts" does not resolve and
+# PIL answers "cannot open resource". subtitles.py already resolves its
+# fonts directory this way; this module was the one place that did not.
+FONT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fonts")
 FONT_PATH = os.path.join(FONT_DIR, "NotoSerif-Bold.ttf")
 # Bundled (SIL OFL, see fonts/Montserrat-OFL.txt): the "pill" look's sans.
 PILL_FONT_PATH = os.path.join(FONT_DIR, "Montserrat-ExtraBold.ttf")
