@@ -182,6 +182,29 @@ function sha256(file) {
   });
 }
 
+/**
+ * Point electron-builder at mirrors that are reachable from here.
+ *
+ * electron-builder downloads the Electron runtime (115 MB) and the NSIS
+ * toolchain from GitHub. On a China-connected machine that is slow, and the
+ * npmmirror carries both — it is Alibaba's CDN and the npm registry this
+ * machine already uses.
+ *
+ * The mirrors are opt-in through the environment, so a build on a machine
+ * with fast GitHub access is unaffected.
+ */
+function configureMirrors() {
+  const npmmirror = process.env.DW_NPMMIRROR || 'https://registry.npmmirror.com/-/binary';
+  if (!process.env.ELECTRON_MIRROR) {
+    process.env.ELECTRON_MIRROR = `${npmmirror}/electron/`;
+    console.log(`[build] electron mirror: ${process.env.ELECTRON_MIRROR}`);
+  }
+  if (!process.env.ELECTRON_BUILDER_BINARIES_MIRROR) {
+    process.env.ELECTRON_BUILDER_BINARIES_MIRROR = `${npmmirror}/electron-builder-binaries/`;
+    console.log(`[build] electron-builder binaries mirror: ${process.env.ELECTRON_BUILDER_BINARIES_MIRROR}`);
+  }
+}
+
 async function main() {
   const argv = process.argv.slice(2);
   if (argv.includes('--help') || argv.includes('-h')) {
@@ -317,6 +340,7 @@ Flags:
 
   // 7) package
   freeDiskSpace();
+  configureMirrors();
   const targetArgs = isMac ? ['--mac', '--arm64'] : ['--win', '--x64'];
   electronBuilder(`package the ${label} installer`,
     ['--config', 'electron/builder-config.js', ...targetArgs],

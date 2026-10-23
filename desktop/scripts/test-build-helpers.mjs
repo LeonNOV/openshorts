@@ -312,6 +312,26 @@ try {
     );
   });
 
+  check('electron-builder is pointed at a reachable mirror', () => {
+    const src = fs.readFileSync(path.join(desktopDir, 'scripts', 'build-app.mjs'), 'utf8');
+    // electron-builder pulls the Electron runtime (115 MB) and the NSIS
+    // toolchain from GitHub; the npmmirror carries both.
+    assert.ok(
+      src.includes('ELECTRON_MIRROR'),
+      'the Electron mirror is not configured',
+    );
+    assert.ok(
+      src.includes('ELECTRON_BUILDER_BINARIES_MIRROR'),
+      'the electron-builder binaries mirror is not configured',
+    );
+    // The environment has to be set BEFORE electron-builder runs, because
+    // run() copies process.env into the child.
+    const cfg = src.indexOf('configureMirrors();');
+    const run = src.indexOf("electronBuilder(`package");
+    assert.ok(cfg >= 0 && run >= 0, 'the mirror configuration is missing');
+    assert.ok(cfg < run, 'the mirrors are configured after electron-builder ran');
+  });
+
   // --- the archive must survive the cleanup --------------------------------
   check('cleaning the extraction cannot delete the archive that was downloaded', () => {
     // The build downloaded the 191 MB archive and then failed to extract it:
