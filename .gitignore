@@ -63,3 +63,8 @@ skills-lock.json
 
 # Instrucciones locales con datos de infra (repo público)
 CLAUDE.local.md
+
+# Local helpers for driving the remote Windows build machine over SSH.
+# They are personal tooling, not part of the project.
+scripts/remote.sh
+scripts/remote-status.sh
