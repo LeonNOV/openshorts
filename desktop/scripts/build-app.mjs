@@ -29,6 +29,7 @@
 import { execFileSync } from 'node:child_process';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -94,6 +95,47 @@ function npmRunner(label, args, opts = {}) {
   }
   const isWin = process.platform === 'win32';
   return run(label, isWin ? 'npm.cmd' : 'npm', args, { ...opts, shell: isWin });
+}
+
+/**
+ * Reclaim disk space before packaging.
+ *
+ * The bundle is ~2 GB and electron-builder copies it into dist/ before
+ * compressing the installer, so the peak footprint is several times the
+ * payload. The CI runners do not have a lot of free disk, and a job that
+ * runs out of it comes back as "cancelled" rather than "failed", which is
+ * easy to misread as a cascade of unrelated errors.
+ *
+ * The pip cache is the biggest thing worth dropping: the dependency install
+ * pulled ~1.3 GB of wheels, and --no-cache-dir was only used for the
+ * install itself. The bundled interpreter can purge its own cache, which
+ * works on every platform.
+ */
+function freeDiskSpace() {
+  console.log('\n▸ free disk space before packaging');
+  const runtimeDir = path.join(desktopDir, 'resources', 'python');
+  const isWinHost = process.platform === 'win32';
+  const py = isWinHost
+    ? path.join(runtimeDir, 'python.exe')
+    : path.join(runtimeDir, 'bin', 'python3.12');
+  if (fs.existsSync(py)) {
+    try {
+      execFileSync(py, ['-m', 'pip', 'cache', 'purge'], { stdio: 'ignore' });
+    } catch { /* the cache may not exist; nothing to reclaim */ }
+  }
+  // Caches that belong to the machine rather than to this project.
+  const junk = isWinHost
+    ? [path.join(os.homedir(), 'AppData', 'Local', 'pip', 'Cache')]
+    : [path.join(os.homedir(), '.cache', 'pip')];
+  for (const dir of junk) {
+    try { fs.rmSync(dir, { recursive: true, force: true }); } catch { /* not there */ }
+  }
+  try {
+    const df = execFileSync(isWinHost ? 'wmic' : 'df',
+      isWinHost ? ['logicaldisk', 'get', 'freespace,caption'] : ['-h', '/'],
+      { encoding: 'utf8' });
+    console.log(df.trim().split('\n').slice(0, 3).map((l) => `  ${l.trim()}`).join('\n'));
+  } catch { /* df is not essential */ }
 }
 
 /**
@@ -274,6 +316,7 @@ Flags:
   }
 
   // 7) package
+  freeDiskSpace();
   const targetArgs = isMac ? ['--mac', '--arm64'] : ['--win', '--x64'];
   electronBuilder(`package the ${label} installer`,
     ['--config', 'electron/builder-config.js', ...targetArgs],

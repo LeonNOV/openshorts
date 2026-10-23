@@ -100,45 +100,15 @@ jobs:
         with:
           python-version: '3.12'
 
-      - name: Install desktop build deps
+      - name: Build the macOS installer
         working-directory: desktop
-        run: npm install
-
-      - name: Bundle Python source tree (app_src)
-        run: node scripts/prepare-source.mjs
-
-      - name: Build bundled Python runtime (relocatable standalone CPython)
-        working-directory: desktop
-        run: npm run build:python
-
-      - name: Build bundled ffmpeg
-        working-directory: desktop
-        run: npm run build:ffmpeg
-
-      - name: Pre-fetch models (uses the bundled Python runtime)
-        shell: bash
-        run: |
-          PY="$(node desktop/scripts/resolve-python.mjs desktop/resources/python)"
-          echo "using interpreter: $PY"
-          "$PY" scripts/prefetch_models.py desktop/resources/models small
-
-      - name: Free disk space before packaging
-        run: |
-          # The bundle is ~2 GB; the runner's free disk is not generous and
-          # electron-builder copies it into dist/ before compressing the dmg.
-          # Reclaim the pip cache and the tool cache first.
-          python -m pip cache purge || true
-          rm -rf /Users/runner/.cache/pip || true
-          rm -rf /Users/runner/work/_temp/_github_pages || true
-          df -h /
-
-      - name: Build macOS dmg
-        working-directory: desktop
-        run: npm run dist:mac
-
-      - name: Verify bundle
-        working-directory: desktop
-        run: npm run verify:bundle
+        # One script does the whole thing: the deps, the bundled source tree,
+        # the relocatable Python runtime, ffmpeg, the model weights, the
+        # dashboard, electron-builder, the bundle check and the artifact
+        # report. Keeping the CI and a developer's machine on the SAME code
+        # path is the point — the two used to drift, and only the CI side was
+        # ever exercised.
+        run: node scripts/build-macos.mjs
 
       - name: Upload the macOS installer to the draft release
         shell: bash
@@ -168,45 +138,11 @@ jobs:
         with:
           python-version: '3.12'
 
-      - name: Install desktop build deps
+      - name: Build the Windows installer
         working-directory: desktop
-        run: npm install
-
-      - name: Bundle Python source tree (app_src)
-        run: node scripts/prepare-source.mjs
-
-      - name: Build bundled Python runtime (relocatable standalone CPython)
-        working-directory: desktop
-        run: npm run build:python
-
-      - name: Build bundled ffmpeg
-        working-directory: desktop
-        run: npm run build:ffmpeg
-
-      - name: Pre-fetch models (uses the bundled Python runtime)
-        shell: bash
-        run: |
-          PY="$(node desktop/scripts/resolve-python.mjs desktop/resources/python)"
-          echo "using interpreter: $PY"
-          "$PY" scripts/prefetch_models.py desktop/resources/models small
-
-      - name: Free disk space before packaging
-        shell: bash
-        run: |
-          # The bundle is ~2 GB; the runner's free disk is not generous and
-          # electron-builder copies it into dist/ before building the installer.
-          # Reclaim the pip cache and the tool cache first.
-          python -m pip cache purge || true
-          rm -rf "$LOCALAPPDATA/pip/Cache" || true
-          df -h .
-
-      - name: Build Windows installer
-        working-directory: desktop
-        run: npm run dist:win
-
-      - name: Verify bundle
-        working-directory: desktop
-        run: npm run verify:bundle
+        # The same script a developer runs on their own Windows machine, so
+        # a green CI run means the desktop build really works.
+        run: node scripts/build-windows.mjs
 
       - name: Upload the Windows installer to the draft release
         shell: bash
