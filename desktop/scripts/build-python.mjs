@@ -67,10 +67,35 @@ console.log(`[build-python] interpreter: ${pyBin}`);
 // feature we need here.
 // --no-cache-dir: the wheels are ~1.3 GB and the CI runners have limited
 // free disk; the cache would double the footprint for no benefit here.
-const tInstall = Date.now();
-console.log('[build-python] installing the dependencies (torch et al. — a few minutes)…');
-execFileSync(pyBin, ['-m', 'pip', 'install', '--no-cache-dir', '--index-url', MIRROR, '-r', requirements], { stdio: 'inherit' });
-console.log(`[build-python] dependencies installed in ${((Date.now() - tInstall) / 1000).toFixed(1)}s`);
+//
+// A rebuild that only changes something else (the ffmpeg source, the
+// packaging config) should not spend six minutes re-downloading 1.3 GB of
+// wheels that are already installed. When the runtime is already there and
+// its dependencies import cleanly, the install is skipped. Pass --force to
+// install anyway.
+const forceInstall = process.argv.includes('--force');
+
+/** True when the runtime already has everything the app needs. */
+function runtimeIsComplete() {
+  try {
+    execFileSync(pyBin, ['-c',
+      'import torch, ultralytics, mediapipe, faster_whisper, onnxruntime; print("deps-ok")'],
+      { stdio: 'ignore' });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+if (!forceInstall && runtimeIsComplete()) {
+  console.log('[build-python] the runtime already has its dependencies — skipping the install');
+  console.log('[build-python] (pass --force to reinstall)');
+} else {
+  const tInstall = Date.now();
+  console.log('[build-python] installing the dependencies (torch et al. — a few minutes)…');
+  execFileSync(pyBin, ['-m', 'pip', 'install', '--no-cache-dir', '--index-url', MIRROR, '-r', requirements], { stdio: 'inherit' });
+  console.log(`[build-python] dependencies installed in ${((Date.now() - tInstall) / 1000).toFixed(1)}s`);
+}
 
 /**
  * Trim deps the desktop build never uses (plan §1.2 / risk §10).

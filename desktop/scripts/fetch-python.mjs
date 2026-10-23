@@ -78,7 +78,13 @@ try {
   // Node's own fetch, not curl: Windows 10 1803 ships curl 7.55, which does
   // not know --retry-all-errors and fails with "option unknown". The URL also
   // contains a '+', which a shell-quoted command string would mangle.
-  await download(url, archive, { label: 'python runtime' });
+  //
+  // The speed floor abandons a transfer that is working but hopelessly
+  // slow, so the build fails fast instead of hanging for hours.
+  await download(url, archive, {
+    label: 'python runtime',
+    minBytesPerSecond: Number(process.env.DW_MIN_DOWNLOAD_KBPS || 64),
+  });
 
   console.log('[fetch-python] extracting…');
   // Both platform tarballs unpack to a top-level `python/` directory.

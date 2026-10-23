@@ -55,16 +55,25 @@ function existingBinaries() {
 }
 
 // Candidate sources, most preferred first.
+//
+// On Windows the GitHub-hosted build comes FIRST, not the gyan.dev one.
+// Measured on a China-connected Windows machine: gyan.dev served the
+// essentials zip at ~10 KB/s (3 hours for a 90 MB file), while the same
+// file on GitHub came down at ordinary GitHub speed. gyan.dev stays in the
+// list as a fallback for when GitHub is blocked.
 const macUrls = [
   'https://www.osxexperts.net/ffmpeg80arm.zip',
   'https://www.osxexperts.net/ffmpeg7arm.zip',
   'https://www.osxexperts.net/ffmpeg6arm.zip',
 ];
 const winUrls = [
+  'https://github.com/GyanD/codexffmpeg/releases/download/7.1/ffmpeg-7.1-essentials_build.zip',
+  'https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip',
   'https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip',
   'https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-full_build.zip',
 ];
-// osxexperts ships ffmpeg and ffprobe as SEPARATE zips; gyan.dev ships both.
+// osxexperts ships ffmpeg and ffprobe as SEPARATE zips; the Windows builds
+// ship both in one archive.
 const separateProbe = !isWin;
 const probeUrls = isWin
   ? []
@@ -91,7 +100,15 @@ async function downloadTo(url, dest, label) {
   // Node's own fetch, not curl: Windows 10 1803 ships curl 7.55, which
   // rejects --retry-all-errors, so a curl-based download fails on the
   // user's machine while working on the CI runner.
-  await download(url, dest, { label });
+  //
+  // The speed floor matters more than the retry count: a throttled CDN can
+  // serve the file at 10 KB/s, which is hours of a build. Below the floor
+  // the transfer is abandoned so the next source gets a turn.
+  await download(url, dest, {
+    label,
+    retries: 2,
+    minBytesPerSecond: Number(process.env.DW_MIN_DOWNLOAD_KBPS || 64),
+  });
 }
 
 /** Find the ffmpeg/ffprobe executables in a freshly extracted directory. */

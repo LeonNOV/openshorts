@@ -10,6 +10,7 @@
  */
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -19,15 +20,28 @@ const desktopDir = path.resolve(__dirname, '..');
 
 let passed = 0;
 let failed = 0;
+const pending = [];
 
 function check(name, fn) {
+  // A check may be synchronous or return a promise; both count the same.
+  const record = (err) => {
+    if (err) {
+      console.log(`FAIL  ${name}\n      ${err.message}`);
+      failed++;
+    } else {
+      console.log(`PASS  ${name}`);
+      passed++;
+    }
+  };
   try {
-    fn();
-    console.log(`PASS  ${name}`);
-    passed++;
+    const r = fn();
+    if (r && typeof r.then === 'function') {
+      pending.push(r.then(() => record(null), (e) => record(e)));
+    } else {
+      record(null);
+    }
   } catch (e) {
-    console.log(`FAIL  ${name}\n      ${e.message}`);
-    failed++;
+    record(e);
   }
 }
 
@@ -229,7 +243,59 @@ try {
       assert.ok(!/execFileSync\(\s*'pwsh'/.test(body), `${s} requires pwsh`);
     }
   });
+
+  // --- a download that is too slow is abandoned --------------------------
+  check('a download below the speed floor is abandoned instead of retried', async () => {
+    // A throttled CDN served the 90 MB ffmpeg zip at 10 KB/s, which is three
+    // hours of a build. The transfer has to give up so the next source can
+    // be tried, and it must NOT retry the same URL.
+    const { download } = await import(
+      new URL('./lib/download.mjs', import.meta.url).href
+    );
+    const dest = path.join(tmp, 'slow.bin');
+    // 1 byte per second against a floor of 64 KB/s.
+    const server = http.createServer((req, res) => {
+      res.writeHead(200, { 'Content-Length': '1000' });
+      res.write(Buffer.alloc(1));
+      const t = setInterval(() => {
+        if (res.writableEnded) { clearInterval(t); return; }
+        res.write(Buffer.alloc(1));
+      }, 1000);
+      res.on('close', () => clearInterval(t));
+    });
+    await new Promise((r) => server.listen(0, '127.0.0.1', r));
+    const port = server.address().port;
+    try {
+      await assert.rejects(
+        () => download(`http://127.0.0.1:${port}/x`, dest, {
+          label: 'slow', retries: 3, minBytesPerSecond: 64,
+        }),
+        /too slow/,
+        'the slow download was not rejected',
+      );
+      // The partial file must not be left behind.
+      assert.ok(!fs.existsSync(dest), 'a partial file was left behind');
+    } finally {
+      server.close();
+    }
+  });
+
+  check('the ffmpeg sources put a reachable host before a throttled one', () => {
+    const src = fs.readFileSync(path.join(desktopDir, 'scripts', 'build-ffmpeg.mjs'), 'utf8');
+    const i = src.indexOf('const winUrls');
+    const block = src.slice(i, src.indexOf('];', i));
+    // gyan.dev served the essentials zip at ~10 KB/s on a China-connected
+    // Windows machine, while the same build on GitHub came down at ordinary
+    // speed. GitHub has to be tried first.
+    const gh = block.indexOf('github.com');
+    const gyan = block.indexOf('gyan.dev');
+    assert.ok(gh >= 0, 'no GitHub-hosted ffmpeg source');
+    assert.ok(gyan >= 0, 'the gyan.dev source is gone entirely');
+    assert.ok(gh < gyan, 'the throttled gyan.dev source is still tried first');
+  });
 } finally {
+  // Wait for the async checks before removing the temp directory they use.
+  await Promise.all(pending);
   fs.rmSync(tmp, { recursive: true, force: true });
 }
 
@@ -247,5 +313,6 @@ function findExe(dir, name) {
   return null;
 }
 
+await Promise.all(pending);
 console.log(`\n${failed ? 'FAILED' : 'PASSED'}: ${passed} passed, ${failed} failed`);
 process.exit(failed ? 1 : 0);
