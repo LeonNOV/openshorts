@@ -36,14 +36,41 @@ const MEDIA_EXT = new Set([
   '.mp4', '.gif', '.mov', '.avi', '.mkv', '.webm', '.zip', '.gz', '.pt',
 ]);
 
+// Files that hold secrets and must never end up in a shipped installer.
+//
+// The important one is `.env`: app.py, main.py and s3_uploader.py all call
+// load_dotenv(), which looks for a .env next to the module — and the module
+// lives in the bundle. A .env in the repository therefore becomes a .env in
+// every user's installation, complete with the AWS credentials it carries,
+// and the app loads it at runtime.
+//
+// The rest are the usual suspects for a machine that also happens to be a
+// development machine.
+const SECRET_NAMES = new Set([
+  '.env', '.envrc', '.netrc', '_netrc', '.npmrc', '.pypirc', '.dockercfg',
+  'credentials', 'credentials.json', 'secrets.json', 'service-account.json',
+  'id_rsa', 'id_dsa', 'id_ecdsa', 'id_ed25519',
+]);
+const SECRET_EXT = new Set(['.pem', '.key', '.p12', '.pfx', '.jks', '.keystore']);
+// A template carries no secrets and is worth shipping.
+const SECRET_NAME_ALLOWED = /(\.example|\.sample|\.template|\.dist)$/i;
+
 function excluded(src) {
   const rel = path.relative(root, src);
   if (!rel || rel === '.') return false;
   const top = rel.split(path.sep)[0];
   if (EXCLUDE.has(top)) return true;
   if (top.endsWith('.egg-info')) return true;
-  if (path.basename(src) === '.DS_Store') return true;
+  const base = path.basename(src);
+  if (base === '.DS_Store') return true;
   if (MEDIA_EXT.has(path.extname(src).toLowerCase())) return true;
+  // Secrets, by name — at any depth, not just at the top level.
+  if (!SECRET_NAME_ALLOWED.test(base)) {
+    if (SECRET_NAMES.has(base) || SECRET_NAMES.has(base.toLowerCase())) return true;
+    if (SECRET_EXT.has(path.extname(base).toLowerCase())) return true;
+    // .env.local, .env.production, ... — any .env with a suffix.
+    if (/^\.env\./i.test(base) || /^\.env$/i.test(base)) return true;
+  }
   return false;
 }
 
