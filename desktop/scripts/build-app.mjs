@@ -44,31 +44,73 @@ function run(label, cmd, args, opts = {}) {
     cwd: opts.cwd || repoRoot,
     stdio: 'inherit',
     env: { ...process.env, ...(opts.env || {}) },
-    // On Windows npm and the electron-builder shim are .cmd files, which
-    // cannot be exec'd directly — they need a shell.
-    shell: process.platform === 'win32' && /\.(cmd|bat)$/i.test(cmd),
+    // Only for genuine shell scripts; the npm/electron-builder shims are
+    // handled without a shell (see npmRunner / electronBuilder below).
+    shell: opts.shell === true,
   });
   return res;
 }
 
-/** npm: prefer the local shim, fall back to whatever is on PATH. */
-function npmCmd() {
-  const local = localBin('npm');
-  return fs.existsSync(local) ? local : 'npm';
+/**
+ * Locate npm's JavaScript entry point.
+ *
+ * On Windows `npm` is npm.cmd, a batch shim. Node 18.20+ refuses to spawn a
+ * .cmd/.bat without a shell (the CVE-2024-27980 fix), which is why a plain
+ * execFileSync('npm', ...) fails with a bare "spawnSync npm ENOENT" on
+ * Windows while working fine on macOS.
+ *
+ * Running npm's own entry script with the current node binary sidesteps the
+ * shim entirely and behaves identically on every platform.
+ */
+function resolveNpmCli() {
+  const candidates = [];
+  // npm sets this when the script was itself started through npm.
+  if (process.env.npm_execpath && /npm-cli\.js$/i.test(process.env.npm_execpath)) {
+    candidates.push(process.env.npm_execpath);
+  }
+  const dir = path.dirname(process.execPath);
+  candidates.push(
+    path.join(dir, 'node_modules', 'npm', 'bin', 'npm-cli.js'),      // Windows, nvm-windows
+    path.join(dir, '..', 'lib', 'node_modules', 'npm', 'bin', 'npm-cli.js'),      // macOS / Linux
+    path.join(dir, '..', '..', 'lib', 'node_modules', 'npm', 'bin', 'npm-cli.js'),
+  );
+  for (const c of candidates) {
+    if (fs.existsSync(c)) return c;
+  }
+  return null;
 }
 
 /**
- * The path of a locally installed CLI (electron-builder and friends).
- * They live in desktop/node_modules/.bin, not on PATH. On Windows that
- * directory holds .cmd shims.
+ * Run npm with the given arguments, on any platform.
+ *
+ * Prefers `node <npm-cli.js>`, which needs no shell and no .cmd shim. Falls
+ * back to the npm on PATH — on Windows that one does need a shell, because it
+ * is a batch file.
  */
-function localBin(name) {
-  const dir = path.join(desktopDir, 'node_modules', '.bin');
-  if (process.platform === 'win32') {
-    const cmd = path.join(dir, `${name}.cmd`);
-    if (fs.existsSync(cmd)) return cmd;
+function npmRunner(label, args, opts = {}) {
+  const cli = resolveNpmCli();
+  if (cli) {
+    return run(label, process.execPath, [cli, ...args], opts);
   }
-  return path.join(dir, name);
+  const isWin = process.platform === 'win32';
+  return run(label, isWin ? 'npm.cmd' : 'npm', args, { ...opts, shell: isWin });
+}
+
+/**
+ * Run electron-builder.
+ *
+ * node_modules/.bin/electron-builder is a .cmd shim on Windows too, so the
+ * package's own entry script is invoked with node instead. That is exactly
+ * what the shim does, minus the batch indirection.
+ */
+function electronBuilder(label, args, opts = {}) {
+  const cli = path.join(desktopDir, 'node_modules', 'electron-builder', 'cli.js');
+  if (!fs.existsSync(cli)) {
+    throw new Error(
+      `[build] electron-builder is not installed at ${cli}. Run "npm install" in desktop/ first.`,
+    );
+  }
+  return run(label, process.execPath, [cli, ...args], opts);
 }
 
 function dirSizeMb(dir) {
@@ -157,7 +199,7 @@ Flags:
 
   // 1) build deps
   if (!skipDeps) {
-    run('install desktop build deps', npmCmd(), ['install'], { cwd: desktopDir });
+    npmRunner('install desktop build deps', ['install'], { cwd: desktopDir });
   }
 
   // 2) refresh the bundled Python source tree. This MUST run from the repo
@@ -190,26 +232,53 @@ Flags:
   } else {
     // Use the runtime we just built: it is the one that will ship, and it
     // already has faster-whisper and ultralytics in it.
-    const bundled = isWin
-      ? path.join(desktopDir, 'resources', 'python', 'python.exe')
-      : path.join(desktopDir, 'resources', 'python', 'bin', 'python3.12');
-    const py = fs.existsSync(bundled) ? bundled : (isWin ? 'python' : 'python3');
+    // Probe for the interpreter instead of assuming a name — the standalone
+    // runtime keeps it at the tree root on Windows (python.exe) and under
+    // bin/ on POSIX (python3.12). This must mirror resolvePyBin() in
+    // build-python.mjs, or the Windows build fails to find its own runtime.
+    const runtimeDir = path.join(desktopDir, 'resources', 'python');
+    const probeDirs = isWin ? ['', 'bin', 'Scripts'] : ['bin', ''];
+    const probeNames = isWin
+      ? ['python.exe', 'python3.exe', 'python']
+      : ['python', 'python3', 'python3.12'];
+    let py = null;
+    for (const d of probeDirs) {
+      for (const n of probeNames) {
+        const p = path.join(runtimeDir, d, n);
+        if (fs.existsSync(p)) { py = p; break; }
+      }
+      if (py) break;
+    }
+    if (!py) {
+      throw new Error(
+        `[build] the bundled interpreter was not found under ${runtimeDir}. ` +
+        'The Python runtime step should have created it.',
+      );
+    }
     run('pre-fetch the model weights', py, [
       path.join(repoRoot, 'scripts', 'prefetch_models.py'),
       modelsDir,
       process.env.DW_WHISPER_SIZE || 'small',
-    ], { cwd: repoRoot });
+    ], {
+      cwd: repoRoot,
+      // huggingface.co is unreachable from mainland China and fails by
+      // hanging; the mirror serves the same layout.
+      env: {
+        HF_ENDPOINT: process.env.HF_ENDPOINT || 'https://hf-mirror.com',
+        HF_HUB_DISABLE_XET: process.env.HF_HUB_DISABLE_XET || '1',
+      },
+    });
   }
 
   // 6) the dashboard
   if (!skipFrontend) {
-    run('build the dashboard',
-      npmCmd(), ['run', 'build:frontend'], { cwd: desktopDir });
+    npmRunner('build the dashboard',
+      ['run', 'build:frontend'], { cwd: desktopDir });
   }
 
   // 7) package
   const targetArgs = isMac ? ['--mac', '--arm64'] : ['--win', '--x64'];
-  run(`package the ${label} installer`, localBin('electron-builder'),
+  electronBuilder(`package the ${label} installer`,
     ['--config', 'electron/builder-config.js', ...targetArgs],
     { cwd: desktopDir });
 

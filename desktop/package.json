@@ -6,11 +6,12 @@
   "author": "DW-shorts",
   "private": true,
   "scripts": {
-    "build:frontend": "cd ../dashboard && npm install && npm run build",
+    "build:frontend": "npm --prefix ../dashboard install && npm --prefix ../dashboard run build",
     "build:python": "node scripts/build-python.mjs",
     "build:ffmpeg": "node scripts/build-ffmpeg.mjs",
     "prefetch:models": "python ../scripts/prefetch_models.py resources/models small",
     "verify:bundle": "node scripts/verify-bundle.mjs",
+    "test:build": "node scripts/test-build-helpers.mjs",
     "prepare:source": "node ../scripts/prepare-source.mjs",
     "build:mac": "node scripts/build-macos.mjs",
     "build:win": "node scripts/build-windows.mjs",

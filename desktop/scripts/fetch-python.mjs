@@ -24,6 +24,7 @@ import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { download } from './lib/download.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(__dirname, '..', '..');
@@ -74,13 +75,14 @@ const archive = path.join(stage, 'python.tar.gz');
 
 try {
   console.log(`[fetch-python] downloading ${url}`);
-  // Array args, not a shell string: the URL contains a '+' and the path may
-  // contain spaces (Windows runners put the workdir under D:\a\...).
-  execFileSync('curl', ['-fsSL', '--retry', '5', '--retry-delay', '3',
-    '--retry-all-errors', '-o', archive, url], { stdio: 'inherit' });
+  // Node's own fetch, not curl: Windows 10 1803 ships curl 7.55, which does
+  // not know --retry-all-errors and fails with "option unknown". The URL also
+  // contains a '+', which a shell-quoted command string would mangle.
+  await download(url, archive, { label: 'python runtime' });
 
   console.log('[fetch-python] extracting…');
   // Both platform tarballs unpack to a top-level `python/` directory.
+  // Windows 10 1803+ ships bsdtar as tar.exe, which reads .tar.gz.
   execFileSync('tar', ['-xzf', archive, '-C', stage], { stdio: 'inherit' });
 
   const extracted = path.join(stage, 'python');

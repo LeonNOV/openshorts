@@ -18,7 +18,33 @@ import shutil
 import sys
 
 
+def configure_hf_endpoint() -> None:
+    """Point huggingface_hub at a reachable endpoint.
+
+    ``huggingface.co`` is unreachable from mainland China, and the failure
+    mode is a long hang rather than a clear error. ``hf-mirror.com`` serves
+    the same layout, so it is the default; set ``DW_HF_ENDPOINT`` (or
+    ``HF_ENDPOINT``) to use a different one, including the official host on a
+    machine that can reach it.
+
+    ``HF_HUB_DISABLE_XET`` is required with the mirror: the mirror serves the
+    metadata but not ``cas-server.xethub.hf.co``, so Xet answers 401.
+    """
+    endpoint = os.environ.get("DW_HF_ENDPOINT") or os.environ.get("HF_ENDPOINT")
+    if not endpoint:
+        endpoint = "https://hf-mirror.com"
+        os.environ["HF_ENDPOINT"] = endpoint
+        # Only the mirror needs this; leaving it on for the official host
+        # would needlessly slow the download down.
+        os.environ.setdefault("HF_HUB_DISABLE_XET", "1")
+    else:
+        os.environ["HF_ENDPOINT"] = endpoint
+    print(f"huggingface endpoint: {os.environ['HF_ENDPOINT']}")
+
+
 def main() -> None:
+    configure_hf_endpoint()
+
     # ABSOLUTE paths only. The YOLO step below chdir()s into a temp directory
     # and then looks for the downloaded weights by joining a RELATIVE path —
     # which, after the chdir, resolves against the wrong directory and the

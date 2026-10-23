@@ -20,6 +20,8 @@ import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { download } from './lib/download.mjs';
+import { extractZip } from './lib/extract.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(__dirname, '..', '..');
@@ -85,31 +87,11 @@ if (existing) {
   process.exit(0);
 }
 
-function download(url, dest) {
-  console.log(`[build-ffmpeg] downloading ${url}`);
-  execFileSync('curl', ['-fsSL', '--retry', '5', '--retry-delay', '3',
-    '--retry-all-errors', '-o', dest, url], { stdio: 'inherit' });
-}
-
-/** Unzip into `dest`, flattening the directory structure. */
-function extractZip(zip, dest) {
-  if (isWin) {
-    // Expand-Archive is a PowerShell cmdlet; the runner's default shell is
-    // PowerShell 7 (pwsh), and `powershell` (5.1) may not be on PATH.
-    execFileSync('pwsh', ['-NoProfile', '-Command',
-      `Expand-Archive -Force -LiteralPath '${zip}' -DestinationPath '${dest}'`],
-      { stdio: 'inherit' });
-    // gyan.dev layout: ffmpeg-<ver>-essentials_build/bin/{ffmpeg,ffprobe}.exe
-    const inner = fs.readdirSync(dest).find((d) => d.startsWith('ffmpeg') && fs.statSync(path.join(dest, d)).isDirectory());
-    if (!inner) throw new Error(`[build-ffmpeg] could not find the extracted ffmpeg directory in ${dest}`);
-    const srcBin = path.join(dest, inner, 'bin');
-    for (const f of ['ffmpeg.exe', 'ffprobe.exe']) {
-      fs.copyFileSync(path.join(srcBin, f), path.join(dest, f));
-    }
-    fs.rmSync(path.join(dest, inner), { recursive: true, force: true });
-  } else {
-    execFileSync('unzip', ['-o', '-j', zip, '-d', dest], { stdio: 'inherit' });
-  }
+async function downloadTo(url, dest, label) {
+  // Node's own fetch, not curl: Windows 10 1803 ships curl 7.55, which
+  // rejects --retry-all-errors, so a curl-based download fails on the
+  // user's machine while working on the CI runner.
+  await download(url, dest, { label });
 }
 
 /** Find the ffmpeg/ffprobe executables in a freshly extracted directory. */
@@ -131,17 +113,32 @@ function findExe(dir, name) {
 /** Copy a freshly extracted executable into the bundle, replacing any old one. */
 function install(src, dest) {
   // The previous build's copy may be read-only; copyFileSync cannot
-  // overwrite it, so clear it first.
-  try { fs.rmSync(dest, { force: true }); } catch { /* did not exist */ }
-  fs.copyFileSync(src, dest);
-  fs.chmodSync(dest, 0o755);
+  // overwrite it, so clear it first. On Windows the removal can also fail
+  // with EBUSY/EPERM when something still holds the file — retry, then fall
+  // back to writing over it in place.
+  try { fs.rmSync(dest, { force: true }); } catch { /* did not exist, or is locked */ }
+  try {
+    fs.copyFileSync(src, dest);
+  } catch (e) {
+    if (e.code !== 'EEXIST' && e.code !== 'EPERM' && e.code !== 'EBUSY') throw e;
+    // Last resort: copy to a temp name and rename over the old one.
+    const tmp = `${dest}.new`;
+    fs.copyFileSync(src, tmp);
+    fs.renameSync(tmp, dest);
+  }
+  try { fs.chmodSync(dest, 0o755); } catch { /* Windows ignores POSIX modes */ }
 }
 
 let installed = 0;
 for (const url of urls) {
   const zip = path.join(workDir, 'ffmpeg.zip');
   try {
-    download(url, zip);
+    console.log(`[build-ffmpeg] downloading ${url}`);
+    await downloadTo(url, zip, 'ffmpeg');
+    // Start from a clean directory: a previous attempt may have left a
+    // partial extraction behind, and findExe would pick up the wrong file.
+    fs.rmSync(workDir, { recursive: true, force: true });
+    fs.mkdirSync(workDir, { recursive: true });
     extractZip(zip, workDir);
     const ff = findExe(workDir, 'ffmpeg');
     if (!ff) throw new Error('ffmpeg not found in the archive');
@@ -150,7 +147,7 @@ for (const url of urls) {
     // The Windows archive (gyan.dev) ships BOTH binaries — take ffprobe from
     // the same extraction rather than fetching it again.
     const fp = findExe(workDir, 'ffprobe');
-    if (fp) install(fp, path.join(binDir, isWin ? 'ffprobe.exe' : 'ffprobe'));
+    if (fp) install(fp, path.join(binDir, fpName));
     break;
   } catch (e) {
     console.warn(`[build-ffmpeg] ${url} failed: ${e.message}`);
@@ -158,12 +155,15 @@ for (const url of urls) {
 }
 if (!installed) throw new Error('[build-ffmpeg] could not obtain ffmpeg from any source');
 
-if (separateProbe && !fs.existsSync(path.join(binDir, 'ffprobe'))) {
+if (separateProbe && !fs.existsSync(path.join(binDir, fpName))) {
   let ok = false;
   for (const url of probeUrls) {
     const zip = path.join(workDir, 'ffprobe.zip');
     try {
-      download(url, zip);
+      console.log(`[build-ffmpeg] downloading ${url}`);
+      await downloadTo(url, zip, 'ffprobe');
+      fs.rmSync(workDir, { recursive: true, force: true });
+      fs.mkdirSync(workDir, { recursive: true });
       extractZip(zip, workDir);
       const fp = findExe(workDir, 'ffprobe');
       if (!fp) throw new Error('ffprobe not found in the archive');
@@ -182,7 +182,7 @@ if (separateProbe && !fs.existsSync(path.join(binDir, 'ffprobe'))) {
 for (const f of fs.readdirSync(binDir)) {
   if (f.startsWith('._')) fs.rmSync(path.join(binDir, f), { force: true });
 }
-fs.rmSync(workDir, { recursive: true, force: true });
+try { fs.rmSync(workDir, { recursive: true, force: true }); } catch { /* locked */ }
 
 console.log('[build-ffmpeg] versions:');
 execFileSync(path.join(binDir, ffName), ['-version'], { stdio: 'inherit' });
