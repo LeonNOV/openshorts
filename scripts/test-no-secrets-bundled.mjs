@@ -25,12 +25,14 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(__dirname, '..');
 
 let failed = 0;
+let passed = 0;
 function report(name, err) {
   if (err) {
     console.log(`FAIL  ${name}\n      ${err.message}`);
     failed++;
   } else {
     console.log(`PASS  ${name}`);
+    passed++;
   }
 }
 
