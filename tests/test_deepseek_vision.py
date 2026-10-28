@@ -182,6 +182,99 @@ def test_the_burned_subtitle_check_runs_on_a_deepseek_key_alone(monkeypatch):
     assert asked["images"] == [(JPEG, "image/jpeg"), (JPEG, "image/jpeg")]
 
 
+# --- what actually reaches the server ---------------------------------------
+
+def test_the_request_that_reaches_the_server_matches_the_documentation(monkeypatch):
+    """The whole path, over real HTTP, against a stand-in for the API.
+
+    A wrong content-block shape comes back as a 400 that reads like a bad
+    key, so the shape is worth checking end to end rather than in pieces.
+    """
+    import http.server
+    import json
+    import threading
+
+    received = {}
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def do_POST(self):
+            n = int(self.headers.get("Content-Length", 0))
+            received["path"] = self.path
+            received["body"] = json.loads(self.rfile.read(n).decode())
+            received["auth"] = self.headers.get("Authorization")
+            out = json.dumps({
+                "choices": [{"message": {"content": json.dumps(
+                    {"layout": "split", "confidence": 0.9, "why": "w"})}}],
+                "usage": {"total_tokens": 100},
+            }).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(out)))
+            self.end_headers()
+            self.wfile.write(out)
+
+        def log_message(self, *a):
+            pass
+
+    server = http.server.HTTPServer(("127.0.0.1", 0), Handler)
+    port = server.server_address[1]
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+
+    try:
+        import layout_picker
+
+        monkeypatch.setenv("GEMINI_API_KEY", "")
+        monkeypatch.setenv("DEEPSEEK_API_KEY", "dk-test")
+        monkeypatch.setenv("DEEPSEEK_BASE_URL", f"http://127.0.0.1:{port}")
+        # ENABLED is read from the environment at import time, so it has to be
+        # set on the module rather than through the environment here.
+        monkeypatch.setattr(layout_picker, "ENABLED", True)
+        monkeypatch.setattr(layout_picker, "sample_frames", lambda *a, **k: [JPEG])
+        assert layout_picker.pick("v.mp4", 30) == "split"
+    finally:
+        server.shutdown()
+
+    body = received["body"]
+    assert received["path"] == "/chat/completions"
+    assert received["auth"] == "Bearer dk-test"
+    # The docs put image understanding on deepseek-flash.
+    assert body["model"] == "deepseek-flash", body["model"]
+    # DeepSeek only documents json_object.
+    assert body["response_format"] == {"type": "json_object"}, body["response_format"]
+
+    system = [m for m in body["messages"] if m["role"] == "system"][0]
+    assert isinstance(system["content"], str), "the system message must stay text-only"
+    user = [m for m in body["messages"] if m["role"] == "user"][0]
+    assert isinstance(user["content"], list)
+    assert user["content"][0]["type"] == "text"
+    image_blocks = [b for b in user["content"] if b["type"] == "image_url"]
+    assert len(image_blocks) == 1, user["content"]
+    url = image_blocks[0]["image_url"]["url"]
+    assert url.startswith("data:image/jpeg;base64,"), url[:40]
+    assert base64.b64decode(url.split(",", 1)[1]) == JPEG
+
+
+def test_a_deepseek_key_outranks_a_local_server_for_the_pictures(monkeypatch):
+    """A local OpenAI-compatible server is usually a text model.
+
+    With LLM_BASE_URL set, the text stages answer from it — but sending it
+    pictures would fail on the request, not on the answer. A DeepSeek key
+    means the Flash model, whatever else is configured.
+    """
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "d")
+    monkeypatch.setenv("LLM_BASE_URL", "http://127.0.0.1:9/v1")
+    seen = {}
+
+    def fake_blocks(prompt, blocks, schema=None, **kw):
+        seen["provider"] = kw.get("provider_name")
+        return {"ok": True}, None
+
+    monkeypatch.setattr(llm_backend, "generate_json_with_blocks", fake_blocks)
+    llm_provider.vision_json("p", [(JPEG, "image/jpeg")])
+    assert seen["provider"] == llm_backend.PROVIDER_DEEPSEEK, seen
+
+
 if __name__ == "__main__":
     failures = 0
     for name, fn in sorted(globals().items()):
