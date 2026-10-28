@@ -1,17 +1,13 @@
-"""LLM backends for the pipeline: Gemini, DeepSeek, or any
+"""Text-only LLM backends for the pipeline: Gemini, DeepSeek, or any
 OpenAI-compatible server.
 
 Three providers answer the pipeline's text prompts:
 
 * ``gemini`` (default) — Google's models.
-* ``deepseek`` — DeepSeek's OpenAI-compatible chat API. Cheap and fast.
+* ``deepseek`` — DeepSeek's OpenAI-compatible chat API. Cheap, fast, and
+  text-only, so it takes over the text stages when it is configured.
 * ``openai`` — any other OpenAI-compatible server (Ollama, LM Studio, vLLM,
   llama.cpp's server, LocalAI, OpenRouter).
-
-DeepSeek is not text-only: its Flash model takes images, documented at
-https://api-docs.deepseek.com/guides/vision. :func:`generate_json_with_images`
-is the transport for that, and the frame-based stages use it when there is no
-Gemini key to look at the footage with.
 
 ``LLM_PROVIDER`` picks one explicitly. Without it the module picks
 ``openai`` when ``LLM_BASE_URL`` is set and ``deepseek`` when
@@ -59,12 +55,6 @@ DEEPSEEK_DEFAULT_MODEL = "deepseek-v4-flash"
 # The detail pass writes one JSON object per clip; the ceiling has to leave
 # room for the answer itself.
 DEEPSEEK_MAX_TOKENS = 16384
-
-# DeepSeek's image understanding lives on the Flash model, not on the V4 name
-# the text stages use. The retired "deepseek-v4-flash-vision-exp" id is still
-# accepted but is served by the current Flash model, so the vision stages ask
-# for it by name. See https://api-docs.deepseek.com/guides/vision
-DEEPSEEK_VISION_MODEL = "deepseek-flash"
 
 
 def _raw_base_url() -> str:
@@ -248,56 +238,6 @@ def _body_for(prompt: str, model: str, provider_name: str, fmt: Optional[dict]) 
     return body
 
 
-def _content_blocks(prompt: str, blocks) -> list:
-    """The user message's content: the prompt plus any pictures.
-
-    ``blocks`` is a list of ``("image", data, mime_type)`` and
-    ``("text", str)`` tuples, in the order they should reach the model. A
-    stage that labels its frames ("Shot 0:", the picture) interleaves the
-    two kinds; a stage that just sends pictures sends only images.
-
-    DeepSeek's chat API takes pictures as OpenAI-style ``image_url`` blocks
-    holding a base64 data URL, and only in a user message — which is where
-    the prompt goes too.
-    """
-    import base64
-
-    content = []
-    for block in blocks:
-        if block[0] == "text":
-            content.append({"type": "text", "text": block[1]})
-            continue
-        _, data, mime_type = block
-        b64 = base64.b64encode(data).decode("ascii")
-        content.append({
-            "type": "image_url",
-            "image_url": {"url": f"data:{mime_type};base64,{b64}"},
-        })
-    content.insert(0, {"type": "text", "text": prompt})
-    return content
-
-
-def _body_for_images(prompt: str, blocks, model: str, provider_name: str,
-                     fmt: Optional[dict]) -> dict:
-    """The request body for a completion that carries pictures."""
-    content = _content_blocks(prompt, blocks)
-    messages = [
-        {"role": "system", "content": "You answer with a single JSON object and nothing else."},
-        {"role": "user", "content": content},
-    ]
-    body = {"model": model, "messages": messages, "temperature": 0.2, "stream": False}
-    if provider_name == PROVIDER_DEEPSEEK:
-        body["max_tokens"] = DEEPSEEK_MAX_TOKENS
-        if _supports_thinking(model):
-            body["thinking"] = {"type": "disabled"}
-        if fmt is not None and fmt.get("type") == "json_object":
-            messages[1] = {"role": "user", "content": [
-                {"type": "text", "text": _json_nudge(prompt)}] + content[1:]}
-    if fmt is not None:
-        body["response_format"] = fmt
-    return body
-
-
 def _supports_thinking(model: str) -> bool:
     """True for the V4 models, which take the ``thinking`` toggle.
 
@@ -468,85 +408,3 @@ def generate_json(prompt: str, schema: Optional[Type[BaseModel]] = None,
     parsed = schema.model_validate(parsed).model_dump()
 
     return parsed, _cost(model, provider_name, usage)
-
-
-def generate_json_with_blocks(prompt: str, blocks, schema: Optional[Type[BaseModel]] = None,
-                              model: Optional[str] = None, key: Optional[str] = None,
-                              provider_name: Optional[str] = None,
-                              ) -> Tuple[dict, Optional[dict]]:
-    """One chat completion that must come back as JSON, with pictures attached.
-
-    ``blocks`` is a list of ``("image", data, mime_type)`` and
-    ``("text", str)`` tuples — JPEG frames in practice, optionally labelled.
-
-    It is the same contract as :func:`generate_json` minus the prompt-only
-    restriction, and the same return shape, so a caller does not branch on
-    which provider answered.
-
-    DeepSeek's image understanding is documented on the Flash model
-    (https://api-docs.deepseek.com/guides/vision), so a vision request
-    defaults to :data:`DEEPSEEK_VISION_MODEL` rather than the text model. A
-    caller that passes ``model`` explicitly gets exactly that model.
-    """
-    import gemini_worker  # local import: keeps this module free of the google SDK
-
-    s = settings(provider_name)
-    provider_name = s["provider"]
-    url = f"{s['base_url']}/chat/completions"
-    if model is None:
-        model = (DEEPSEEK_VISION_MODEL
-                 if provider_name == PROVIDER_DEEPSEEK
-                 else s["model"])
-    auth = key if key is not None else s["api_key"]
-    last_rejection: Optional[str] = None
-    with _client() as client:
-        for fmt in _response_formats(schema, provider_name):
-            body = _body_for_images(prompt, blocks, model, provider_name, fmt)
-            resp = client.post(url, json=body, headers=_headers(auth))
-            if resp.status_code >= 400 and _rejects_max_tokens(resp):
-                body.pop("max_tokens", None)
-                resp = client.post(url, json=body, headers=_headers(auth))
-            if resp.status_code >= 400 and _rejects_field(resp, "thinking"):
-                body.pop("thinking", None)
-                resp = client.post(url, json=body, headers=_headers(auth))
-            if fmt is not None and _is_format_rejection(resp):
-                last_rejection = resp.text[:200]
-                continue
-            if resp.status_code >= 400:
-                raise RuntimeError(
-                    f"LLM server {resp.status_code} from {url}: {resp.text[:300]}")
-            data = resp.json()
-            break
-        else:
-            raise RuntimeError(
-                f"LLM server rejected every response_format variant: {last_rejection}")
-
-    if _truncated(data):
-        raise RuntimeError(
-            f"LLM server ran out of output tokens on {model}; the answer was cut short.")
-
-    choices = data.get("choices") or []
-    text = ""
-    if choices:
-        msg = choices[0].get("message") or {}
-        text = _message_text(msg)
-    usage = data.get("usage") or {}
-    if schema is None:
-        return parse_json_value(text), _cost(model, provider_name, usage)
-    parsed = gemini_worker._parse_json_response_text(text)
-    parsed = schema.model_validate(parsed).model_dump()
-    return parsed, _cost(model, provider_name, usage)
-
-
-def generate_json_with_images(prompt: str, images, schema: Optional[Type[BaseModel]] = None,
-                              model: Optional[str] = None, key: Optional[str] = None,
-                              provider_name: Optional[str] = None,
-                              ) -> Tuple[dict, Optional[dict]]:
-    """One chat completion that must come back as JSON, with pictures attached.
-
-    ``images`` is a list of ``(data, mime_type)`` pairs — JPEG frames, in
-    practice. A thin wrapper over :func:`generate_json_with_blocks` for the
-    common case of pictures with no labels between them.
-    """
-    blocks = [("image", data, mime_type) for data, mime_type in images]
-    return generate_json_with_blocks(prompt, blocks, schema, model, key, provider_name)

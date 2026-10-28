@@ -121,20 +121,24 @@ def frames_at(video_path, times, width=None):
     return out
 
 
-def _ask_model(frames, prompt, api_key):
-    """One vision call; returns the parsed dict. Split out so tests can stub it.
+def _ask_gemini(frames, prompt, api_key):
+    """One vision call; returns the parsed dict. Split out so tests can stub it."""
+    from google import genai
+    from google.genai import types as genai_types
+    import gemini_worker
 
-    The frames go to Gemini when there is a Gemini key, and to DeepSeek's
-    Flash model otherwise — both can look at pictures.
-    """
-    import llm_provider
-
-    answer, _cost = llm_provider.vision_json(
-        prompt,
-        [(b, "image/jpeg") for b in frames],
-        schema=None,
-    )
-    return answer or {}
+    client = genai.Client(api_key=api_key)
+    model_name = os.environ.get("GEMINI_MODEL") or "gemini-3.1-flash-lite"
+    parts = [genai_types.Part.from_bytes(data=b, mime_type="image/jpeg") for b in frames]
+    response = client.models.generate_content(
+        model=model_name,
+        contents=parts + [prompt],
+        config=genai_types.GenerateContentConfig(
+            response_mime_type="application/json",
+            response_schema=gemini_worker.GroundedHook,
+        ))
+    gemini_worker.raise_if_blocked(response)
+    return json.loads(response.text) or {}
 
 
 def reground(clip_path, clip, transcript, start, end) -> Optional[dict]:
@@ -142,11 +146,9 @@ def reground(clip_path, clip, transcript, start, end) -> Optional[dict]:
     in place from the clip's frames. Returns what changed (also stored under
     ``clip['hook_grounding']``), or None when skipped or failed."""
     api_key = os.getenv("GEMINI_API_KEY")
-    deepseek_key = os.getenv("DEEPSEEK_API_KEY", "").strip()
-    if not api_key and not deepseek_key:
-        print("   🪝 Hook grounding skipped: needs a key for a model that can "
-              "see frames (Gemini, or DeepSeek's Flash model), keeping the "
-              "transcript hook.")
+    if not api_key:
+        print("   🪝 Hook grounding skipped: needs a Gemini key (frames), "
+              "keeping the transcript hook.")
         return None
     try:
         import gemini_worker
@@ -161,7 +163,7 @@ def reground(clip_path, clip, transcript, start, end) -> Optional[dict]:
             current_hook=clip.get("viral_hook_text") or "",
             current_title=clip.get("video_title_for_youtube_short") or "",
             transcript=clip_words(transcript, start, end)[:4000] or "(no speech)")
-        answer = _ask_model(frames, prompt, api_key)
+        answer = _ask_gemini(frames, prompt, api_key)
         hook = str(answer.get("viral_hook_text") or "").strip()
         title = str(answer.get("video_title_for_youtube_short") or "").strip()
         if not hook:
