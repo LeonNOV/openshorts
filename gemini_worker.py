@@ -86,33 +86,6 @@ and an Instagram description, and a YouTube title ≤100 chars). Order clips bes
 to worst by how likely they are to stop a viewer scrolling.
 """
 
-# The same ask, but for a model that sees PICTURES rather than the video
-# file: DeepSeek's Flash model takes frames, not footage. The frames are
-# sampled evenly across the video and each is labelled with the second it
-# was taken at, so the model can still answer in absolute timestamps.
-VISUAL_FRAMES_PROMPT_TEMPLATE = """
-You are a senior short-form video editor. This video has NO speech/audio — judge
-it purely by what you SEE. You are given still frames sampled evenly across the
-video, each labelled with the second it was taken at. Pick the {min_clips}–{max_clips} MOST
-engaging visual moments for TikTok / Reels / Shorts (action, reveals,
-transformations, striking or funny shots, satisfying payoffs, dramatic movement).
-
-TIME CONTRACT — STRICT:
-- Timestamps in ABSOLUTE SECONDS from the start (usable with ffmpeg -ss/-to).
-- Only numbers with up to 3 decimals (e.g. 0, 12.5, 47.250).
-- 0 <= start < end <= {video_duration}.
-- Each clip {min_secs:g} to {max_secs:g} seconds long. If the whole video is
-  shorter than {min_secs:g}s, return one clip spanning the full video.
-- Cut on visual scene changes, never mid-motion.
-- You only see stills, so a clip's start and end can be read off the labels of
-  the frames that fall inside it. Prefer spans that a labelled frame sits in
-  the middle of, and keep the boundaries on scene changes you can see.
-
-For each clip write catchy copy in {language} (a scroll-stopping hook, a TikTok
-and an Instagram description, and a YouTube title ≤100 chars). Order clips best
-to worst by how likely they are to stop a viewer scrolling.
-"""
-
 
 # Grounded rewrite of hook + title for a clip whose meaning lives on screen
 # (SCREENCAST / WIDE / INSET stretches): the detail pass never saw a frame,

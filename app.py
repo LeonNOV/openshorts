@@ -305,25 +305,16 @@ def payment_required(error: str, message: str, **extra) -> HTTPException:
     })
 
 
-def gemini_missing_error(reason: Optional[str] = None):
+def gemini_missing_error():
     """The right 4xx when no Gemini key could be resolved.
 
     402 for a signed-in-but-not-entitled cloud user (needs a plan); 400 otherwise
     (BYOK header simply missing).
-
-    ``reason`` explains why this particular action needs Gemini. Most of the
-    pipeline does not: DeepSeek's Flash model reads the frames, so a user with
-    only a DeepSeek key can still cut a video. The AI editor and the effects
-    config are the exceptions — they upload the whole file and ask for edits
-    on a timeline, which sampled frames cannot carry.
     """
     if BILLING_ENABLED:
         return payment_required(
             "no_plan", "This action needs an active OpenShorts plan (or the user's own API key).")
-    detail = "Missing X-Gemini-Key header"
-    if reason:
-        detail = f"{detail}. {reason}"
-    return HTTPException(status_code=400, detail=detail)
+    return HTTPException(status_code=400, detail="Missing X-Gemini-Key header")
 
 
 # Probe rate limiter. In-memory, resets on restart by design — the hard monthly
@@ -4139,8 +4130,7 @@ async def edit_clip(
     final_api_key = body_key or await resolve_gemini(request)
 
     if not final_api_key:
-        raise gemini_missing_error(
-            'This action reads the video file itself, not sampled frames, so it needs Gemini. The rest of the pipeline works with a DeepSeek key on its own.')
+        raise gemini_missing_error()
 
     await _ensure_job_files(req.job_id, request)
     if req.job_id not in jobs:
@@ -5141,8 +5131,7 @@ async def generate_effects_config(
     final_api_key = await resolve_gemini(request)
 
     if not final_api_key:
-        raise gemini_missing_error(
-            'This action reads the video file itself, not sampled frames, so it needs Gemini. The rest of the pipeline works with a DeepSeek key on its own.')
+        raise gemini_missing_error()
 
     await _ensure_job_files(req.job_id, request)
     if req.job_id not in jobs:

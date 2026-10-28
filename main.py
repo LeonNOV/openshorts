@@ -2218,95 +2218,20 @@ def speech_is_sparse(transcript, duration):
     return words < MIN_SPEECH_WORDS or words / minutes < MIN_SPEECH_WORDS_PER_MIN
 
 
-def _visual_clips_from_frames(video_path, video_duration, language="en"):
-    """The silent-video clip picker for a model that takes pictures.
-
-    DeepSeek's Flash model understands images but not video files, so the
-    footage is sampled into stills instead of uploaded. The frames are
-    labelled with the second they were taken at, and the model answers with
-    the same {"shorts", "cost_analysis"} shape as the Gemini path.
-    """
-    import gemini_worker
-    import hook_grounding
-    import llm_provider
-
-    # The vision path has no scoring windows to derive a count from, so the
-    # env targets (user request) apply directly over the classic 3-15.
-    def _env_int(name, default):
-        try:
-            return max(1, int(os.environ.get(name, "")))
-        except ValueError:
-            return default
-    v_min_clips = _env_int("CLIP_TARGET_MIN", 3)
-    v_max_clips = max(v_min_clips, _env_int("CLIP_TARGET_MAX", 15))
-    v_min_secs, v_max_secs = clip_duration_bounds()
-
-    n_frames = max(8, min(24, int(video_duration / 5) or 8))
-    times = [video_duration * (i + 0.5) / n_frames for i in range(n_frames)]
-    frames = hook_grounding.frames_at(video_path, times)
-    if not frames:
-        print("❌ Could not read any frames from the video.")
-        return None
-    # frames_at skips the frames it could not decode, so the labels have to
-    # follow the frames that survived.
-    kept = [(t, jpg) for t, jpg in zip(times, frames)]
-    print(f"🎥  Model: DeepSeek Flash | {len(kept)} frame(s) sampled "
-          f"across {video_duration:.0f}s")
-
-    blocks = []
-    for t, jpg in kept:
-        blocks.append(("text", f"Frame at {t:.2f}s:"))
-        blocks.append(("image", jpg, "image/jpeg"))
-    prompt = gemini_worker.VISUAL_FRAMES_PROMPT_TEMPLATE.format(
-        video_duration=video_duration, language=language,
-        min_clips=v_min_clips, max_clips=v_max_clips,
-        min_secs=v_min_secs, max_secs=v_max_secs)
-    answer, cost = llm_provider.vision_json(
-        prompt, blocks=blocks, schema=gemini_worker.VisualResponse)
-    shorts = (answer or {}).get("shorts") or []
-    clean = []
-    for s in shorts:
-        s["start"] = max(0.0, float(s.get("start", 0)))
-        s["end"] = min(float(video_duration), float(s.get("end", 0)))
-        if s["end"] - s["start"] >= 1.0:
-            clean.append(s)
-    if not clean:
-        print("⚠️ Vision pass returned no usable clips.")
-        return None
-    result = {"shorts": clean}
-    if cost:
-        print(f"💰 Vision cost: ${cost.get('total_cost', 0):.6f}")
-        result["cost_analysis"] = cost
-    return result
-
-
 def get_visual_clips(video_path, video_duration, language="en"):
-    """Clip a SILENT video by vision: a model watches the footage and picks the
+    """Clip a SILENT video by vision: Gemini watches the footage and picks the
     most engaging visual moments (no transcript). Returns the same
     {"shorts", "cost_analysis"} shape as get_viral_clips, or None."""
+    print("🎥  Silent video — analyzing with Gemini vision (no transcript)...")
     api_key = os.getenv("GEMINI_API_KEY")
-    deepseek_key = os.getenv("DEEPSEEK_API_KEY", "").strip()
-    if not api_key and not deepseek_key:
+    if not api_key:
         if llm_backend.active():
             print("❌ This video has no usable speech, so it has to be clipped by "
-                  "watching it, and that needs a model that can see the footage. "
-                  "Add a GEMINI_API_KEY (it reads the video) or a DEEPSEEK_API_KEY "
-                  "(its Flash model reads sampled frames).")
+                  "watching it, and that needs Gemini (a text-only LLM cannot "
+                  "see the footage). Add a GEMINI_API_KEY for silent videos.")
         else:
             print("❌ Error: GEMINI_API_KEY not found.")
         return None
-
-    if not api_key:
-        # No Gemini: DeepSeek's Flash model takes pictures, so the footage is
-        # sampled into stills rather than uploaded.
-        print("🎥  Silent video — analyzing with DeepSeek vision (frames, no transcript)...")
-        try:
-            return _visual_clips_from_frames(video_path, video_duration, language)
-        except Exception as e:
-            print(f"❌ DeepSeek vision error: {e}")
-            return None
-
-    print("🎥  Silent video — analyzing with Gemini vision (no transcript)...")
     client = genai.Client(api_key=api_key)
     model_name = os.environ.get("GEMINI_MODEL") or 'gemini-3.1-flash-lite'
     print(f"🎥  Model: {model_name} | uploading {os.path.basename(video_path)}…")
