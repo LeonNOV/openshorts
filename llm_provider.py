@@ -72,6 +72,14 @@ def vision_json(prompt: str, images=None, schema=None, provider_name: Optional[s
     key = gemini_key()
     if key:
         return _gemini_vision_json(prompt, blocks, schema, key), None
+    # A DeepSeek key means the Flash model, whichever provider would otherwise
+    # answer: a local OpenAI-compatible server on LLM_BASE_URL is usually a
+    # text model, and sending it pictures would fail on the request rather
+    # than on the answer.
+    if deepseek_key():
+        return llm_backend.generate_json_with_blocks(
+            prompt, blocks, schema, key=deepseek_key(),
+            provider_name=PROVIDER_DEEPSEEK)
     if chosen in (PROVIDER_DEEPSEEK, PROVIDER_OPENAI):
         return llm_backend.generate_json_with_blocks(
             prompt, blocks, schema, key=deepseek_key() or None,
