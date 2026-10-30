@@ -145,6 +145,64 @@ function freeDiskSpace() {
  * package's own entry script is invoked with node instead. That is exactly
  * what the shim does, minus the batch indirection.
  */
+/**
+ * macOS only: make sure the DMG we are about to hand out actually opens.
+ *
+ * Three things can go wrong, and none of them is caught by the bundle
+ * verification:
+ *
+ *  - the app inside carries a signature that does not validate, so macOS
+ *    calls the bundle damaged ("已损坏，无法打开") instead of offering the
+ *    right-click → Open escape hatch;
+ *  - the installer helper is missing from the volume, so a user who cannot
+ *    launch the app has nothing to double-click;
+ *  - the image carries a quarantine attribute, so every copy of it starts
+ *    life blocked.
+ *
+ * The image is mounted for the check and detached again, so what is
+ * verified is what the user will actually get.
+ */
+function verifyMacDmg(dmgPath) {
+  const hdiutil = '/usr/bin/hdiutil';
+
+  // A quarantine attribute on the image propagates to everything copied out
+  // of it. Build output is not downloaded, so it must not carry one.
+  try {
+    execFileSync('/usr/bin/xattr', ['-cr', dmgPath], { stdio: 'ignore' });
+  } catch { /* nothing to clear */ }
+
+  const plist = execFileSync(
+    hdiutil, ['attach', dmgPath, '-nobrowse', '-readonly', '-plist'],
+    { encoding: 'utf8' },
+  );
+  const mount = (plist.match(/<key>mount-point<\/key>\s*<string>([^<]+)<\/string>/) || [])[1];
+  if (!mount) {
+    throw new Error(`[build] the dmg did not mount:\n${plist}`);
+  }
+  try {
+    const entries = fs.readdirSync(mount);
+    const appName = 'DW-shorts.app';
+    if (!entries.includes(appName)) {
+      throw new Error(
+        `[build] ${appName} is missing from the dmg (found: ${entries.join(', ')})`);
+    }
+    const helper = '安装.command';
+    if (!entries.includes(helper)) {
+      throw new Error(
+        `[build] ${helper} is missing from the dmg — a user who cannot launch ` +
+        `the app has nothing to double-click`);
+    }
+    execFileSync('/usr/bin/codesign',
+                 ['--verify', '--deep', '--strict', path.join(mount, appName)],
+                 { stdio: 'inherit' });
+    console.log(`  • dmg holds ${appName} with a valid signature, and ${helper}`);
+  } finally {
+    try {
+      execFileSync(hdiutil, ['detach', mount, '-quiet'], { stdio: 'ignore' });
+    } catch { /* already gone */ }
+  }
+}
+
 function electronBuilder(label, args, opts = {}) {
   const cli = path.join(desktopDir, 'node_modules', 'electron-builder', 'cli.js');
   if (!fs.existsSync(cli)) {
@@ -357,11 +415,19 @@ Flags:
   const artifacts = fs.existsSync(distDir)
     ? fs.readdirSync(distDir).filter((f) => pattern.test(f))
     : [];
-  if (!artifacts.length) {
-    console.error('\n[build] no artifact found in dist/ — something went wrong.');
-    process.exit(1);
-  }
-  console.log('\n\x1b[1m=== build result ===\x1b[0m');
+    if (!artifacts.length) {
+      console.error('\n[build] no artifact found in dist/ — something went wrong.');
+      process.exit(1);
+    }
+    if (isMac) {
+      // A dmg that cannot be opened is not an artifact. Check it here, where
+      // the build can still fail, rather than in the user's hands.
+      console.log('\n\x1b[1m▸ verify the dmg opens\x1b[0m');
+      for (const name of artifacts) {
+        verifyMacDmg(path.join(distDir, name));
+      }
+    }
+    console.log('\n\x1b[1m=== build result ===\x1b[0m');
   console.log(`  dist/ total: ${dirSizeMb(distDir).toFixed(0)} MB`);
   for (const name of artifacts) {
     const full = path.join(distDir, name);

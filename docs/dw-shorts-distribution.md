@@ -51,34 +51,51 @@ Python 运行时 → 构建 ffmpeg → 预取模型权重 → 构建前端 → e
 
 ## 3. macOS 安装与 Gatekeeper
 
-未签名的 `.app` 会被 Gatekeeper 拦截，双击提示"无法打开，因为无法验证开发者"。两种解决方式：
+应用不做 Developer ID 签名与公证（方案 §11），但**打包时会做 ad-hoc 签名**
+（`desktop/electron/after-pack-sign.js`）。这一步不是可有可无的：Electron 自带的
+二进制只有链接器级的临时签名，而 electron-builder 在那之后才把 extraResources
+拷进包里，于是包级签名与实际内容不再匹配——macOS 读到**无效签名**时会判定
+bundle **已损坏**（"DW-shorts 已损坏，无法打开"），而不是常见的"无法验证开发者"，
+并且不提供右键 → 打开的出口。重新签名让签名本身有效，问题就回到"未签名"这个
+可解释、可处理的状态。
 
-### 方式 A（推荐，零成本）：免费 Developer ID 个人团队签名
-不需要付费开发者账号、不需要公证。在打包机上执行：
+签名之后，剩下的拦截来自 Gatekeeper 对**隔离文件**（下载来的副本带
+`com.apple.quarantine`）的策略。三种解决方式：
 
-```bash
-# 用本机登录的 Apple ID 免费团队对 .app 签名
-codesign --force --deep --sign "-" DW-shorts.app
-```
+### 方式 A（随包提供，用户侧零操作）：双击 DMG 里的 `安装.command`
 
-`-` 表示使用 **Apple Distribution (Personal Team)** 免费证书。签名后 Gatekeeper 不再拦截双击启动，且避免每次启动的隔离检查变慢。这是方案 §11 强烈建议的零成本选项。
+DMG 根目录带一个 `安装.command`。它做三件事：把应用装进 `/Applications`
+（如果还没装的话）、解除隔离属性、启动应用。这是**推荐路径**——用户只需要
+双击一个文件。
 
-### 方式 B：随包 `安装.command`（已提供）
-仓库内 `desktop/resources/安装.command` 在用户双击时执行：
+**注意**：`.command` 文件本身从 DMG 里出来时也可能带隔离属性，首次请
+右键 → 打开。
+
+### 方式 B：手动终端
 
 ```bash
 xattr -dr com.apple.quarantine /Applications/DW-shorts.app
 open /Applications/DW-shorts.app
 ```
 
-用户只需双击这一个文件即可解除隔离并启动。**注意**：`.command` 文件本身也可能被隔离，首次需右键 → 打开。
+内部分发（AirDrop、局域网共享、团队盘）通常不触发隔离，可直接用。
 
-### 方式 C：手动终端
+### 方式 C（分发方）：用真的 Developer ID 签名并公证
+
+这是唯一能让"下载即用、无任何提示"的方案，需要付费的 Apple Developer 账号。
+在打包机上：
+
 ```bash
-xattr -dr com.apple.quarantine /Applications/DW-shorts.app
+codesign --force --deep --options runtime --sign "Developer ID Application: <团队名> (<TEAMID>)" DW-shorts.app
+xcrun notarytool submit DW-shorts.dmg --keychain-profile <profile> --wait
+xcrun stapler staple DW-shorts.dmg
 ```
 
-内部分发（AirDrop、局域网共享、团队盘）通常不触发隔离，可直接用。
+免费的个人团队证书**不能**替代它：个人团队签出来的应用没有公证票据，
+Gatekeeper 仍然会拦隔离文件。
+
+> 顺带一提：`codesign --sign "-"` 是**临时签名（ad-hoc）**，不是个人团队证书。
+> 它让签名有效（从而避免"已损坏"），但不会让 Gatekeeper 接受一个隔离的文件。
 
 ---
 
