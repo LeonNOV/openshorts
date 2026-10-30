@@ -6,6 +6,8 @@
  *  - probe the fixed port (48152) and poll /health before showing the window;
  *  - capture backend stdout/stderr to <userData>/logs/backend.log;
  *  - bridge secret storage to the renderer via safeStorage (OS keychain);
+ *  - hand the renderer the real path of a file the user picked, so a video
+ *    that is already on this machine does not have to be pushed through HTTP;
  *  - keep mutable data out of the read-only install dir (cwd = userData).
  *
  * The backend speaks HTTP on 127.0.0.1 only; the dashboard is served by the
@@ -13,9 +15,21 @@
  */
 const { app, BrowserWindow, ipcMain, safeStorage } = require('electron');
 const { spawn } = require('child_process');
+const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
 const net = require('net');
+
+// A per-launch token, given to the backend through its environment and to
+// the renderer through webPreferences.additionalArguments.
+//
+// The backend accepts a local file path only when a request carries the
+// matching token. Without it, any page in the user's browser could POST to
+// the loopback backend and make it read an arbitrary file off their disk —
+// the backend is same-origin-only for its own UI, but nothing stops another
+// tab from talking to 127.0.0.1. A custom header also means the request is
+// not a CORS-simple one, so a browser has to preflight it.
+const DESKTOP_TOKEN = crypto.randomBytes(24).toString('hex');
 
 // Preferred loopback port (plan §2.2). DW_SHORTS_PORT overrides it.
 //
@@ -148,6 +162,10 @@ function startBackend() {
       // on the next launch. Point the cache at the writable data directory:
       // the imports stay cached, the bundle stays untouched.
       PYTHONPYCACHEPREFIX: path.join(app.getPath('userData'), 'pycache'),
+      // The backend only honours a local file path when the request carries
+      // this token, so a page in the user's browser cannot ask it to read
+      // arbitrary files off their disk.
+      DW_SHORTS_DESKTOP_TOKEN: DESKTOP_TOKEN,
     };
   if (settings.whisperSize) env.DW_SHORTS_WHISPER_SIZE = String(settings.whisperSize);
   // The bundled Python source tree and the built dashboard both live under
@@ -170,15 +188,17 @@ function startBackend() {
   });
 }
 
-function createWindow() {
-  win = new BrowserWindow({
-    width: 1280, height: 800, show: false,
-    webPreferences: {
-      preload: path.join(__dirname, 'preload.js'),
-      contextIsolation: true,
-      nodeIntegration: false,
-    },
-  });
+  function createWindow() {
+    win = new BrowserWindow({
+      width: 1280, height: 800, show: false,
+      webPreferences: {
+        preload: path.join(__dirname, 'preload.js'),
+        contextIsolation: true,
+        nodeIntegration: false,
+        // The preload reads the desktop token from here.
+        additionalArguments: [`--dw-desktop-token=${DESKTOP_TOKEN}`],
+      },
+    });
   win.loadURL(`http://127.0.0.1:${PORT}/`);
   win.once('ready-to-show', () => win.show());
   win.on('closed', () => { win = null; });
