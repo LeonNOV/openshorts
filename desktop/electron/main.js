@@ -134,14 +134,21 @@ function startBackend() {
   // backend env (desktop_runtime honors DW_SHORTS_WHISPER_SIZE).
   let settings = {};
   try { settings = JSON.parse(fs.readFileSync(path.join(app.getPath('userData'), 'settings.json'), 'utf-8')); } catch (_) { /* none yet */ }
-  const env = {
-    ...process.env,
-    DW_SHORTS_BUNDLE: res,                       // desktop_runtime reads this
-    DW_SHORTS_DATA_DIR: app.getPath('userData'),  // writable: uploads/output/logs
-    DW_SHORTS_PORT: String(PORT),
-    PYTHONIOENCODING: 'utf-8',                    // Windows console safety (§5.7)
-    PYTHONUNBUFFERED: '1',
-  };
+    const env = {
+      ...process.env,
+      DW_SHORTS_BUNDLE: res,                       // desktop_runtime reads this
+      DW_SHORTS_DATA_DIR: app.getPath('userData'),  // writable: uploads/output/logs
+      DW_SHORTS_PORT: String(PORT),
+      PYTHONIOENCODING: 'utf-8',                    // Windows console safety (§5.7)
+      PYTHONUNBUFFERED: '1',
+      // Python writes __pycache__/*.pyc next to the source it imports by
+      // default. In the bundle that means writing into the signed app, and a
+      // file added or changed inside a signed bundle invalidates its code
+      // signature — macOS then calls the app damaged and refuses to open it
+      // on the next launch. Point the cache at the writable data directory:
+      // the imports stay cached, the bundle stays untouched.
+      PYTHONPYCACHEPREFIX: path.join(app.getPath('userData'), 'pycache'),
+    };
   if (settings.whisperSize) env.DW_SHORTS_WHISPER_SIZE = String(settings.whisperSize);
   // The bundled Python source tree and the built dashboard both live under
   // process.resourcesPath; make the backend find them.
