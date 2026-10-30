@@ -16,6 +16,12 @@ module.exports = {
   appId: 'com.dwshorts.app',
   productName: 'DW-shorts',
   artifactName: 'DW-shorts-${version}-${arch}.${ext}',
+  // Sign the packaged bundle before the DMG is assembled. Without this the app
+  // keeps the linker-level ad-hoc signature Electron ships, which stops
+  // validating once electron-builder has copied extraResources in — and macOS
+  // reads an invalid signature as a corrupt bundle ("已损坏，无法打开"), which
+  // offers no right-click → Open escape hatch. See electron/after-pack-sign.js.
+  afterPack: path.join(__dirname, 'after-pack-sign.js'),
   // Build artifacts land in desktop/dist; app dir is desktop/ itself (it holds
   // the package.json whose `main` points at electron/main.js).
   directories: {
@@ -39,12 +45,25 @@ module.exports = {
   ],
   mac: {
     target: [{ target: 'dmg', arch: 'arm64' }],
-    // No Developer ID / no notarization (plan §11). See 安装.command for the
-    // free Personal-Team sign option that removes the Gatekeeper first-launch block.
+    // No Developer ID / no notarization (plan §11). The bundle is still signed
+    // ad-hoc by the afterPack hook above, so its signature validates; what
+    // Gatekeeper wants on top of that is a Developer ID, or the user running
+    // 安装.command, which ships in the DMG for exactly that reason.
     identity: null,
     notarize: false,
     hardenedRuntime: false,
     gatekeeperAssess: false,
+  },
+  // dmg options live at the root of the configuration, not under `mac`.
+  dmg: {
+    // The default layout is the app plus the /Applications link. Adding the
+    // installer helper means a user who cannot launch the app straight from
+    // the DMG still has one file to double-click.
+    contents: [
+      { x: 130, y: 200 },
+      { x: 410, y: 220, type: 'link', path: '/Applications' },
+      { x: 130, y: 380, type: 'file', path: 'resources/安装.command', name: '安装.command' },
+    ],
   },
   win: {
     target: [{ target: 'nsis', arch: 'x64' }],
