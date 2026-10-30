@@ -56,6 +56,11 @@ os.makedirs(OUTPUT_DIR, exist_ok=True)
 MAX_CONCURRENT_JOBS = int(os.environ.get("MAX_CONCURRENT_JOBS", "5"))
 MAX_FILE_SIZE_MB = 2048  # 2GB limit
 
+# A file the desktop app hands over by path is not uploaded, so it costs no
+# transfer and no copy — the pipeline reads it where it already is. The cap
+# is here only so a pathological file cannot wedge a job for hours.
+MAX_LOCAL_FILE_MB = int(os.environ.get("MAX_LOCAL_FILE_MB", "20480"))  # 20GB
+
 # How TikTok receives our uploads. MEDIA_UPLOAD lands the video in the user's
 # TikTok drafts so they finish the post inside TikTok's own editor; DIRECT_POST
 # publishes straight to their feed, which is Upload-Post's default.
@@ -3224,6 +3229,10 @@ async def process_endpoint(
     captions: Optional[str] = Form(None),
     upload_id: Optional[str] = Form(None),
     max_minutes: Optional[str] = Form(None),
+    # A file already on this machine, handed over by path instead of uploaded.
+    # The desktop app sends it; the backend only accepts it with the app's
+    # token (see _desktop_token_ok).
+    local_path: Optional[str] = Form(None),
 ):
     # Two different keys for two different jobs. The Gemini key feeds the
     # frame-based stages (layout picker, screen check, hook grounding); the
@@ -3292,8 +3301,9 @@ async def process_endpoint(
     if upload_id and not url and not file and not thumb_session:
         upload_slot = _take_pending_upload(upload_id, await _owner_id(request))
 
-    if not url and not file and not thumb_session and not upload_slot:
-        raise HTTPException(status_code=400, detail="Must provide URL, File or upload_id")
+    if not url and not file and not thumb_session and not upload_slot and not local_path:
+        raise HTTPException(status_code=400,
+                            detail="Must provide URL, File, upload_id or local_path")
 
     # Completion callback: reject unsafe targets NOW (clear 400) — delivery
     # re-validates anyway, but failing at submit is the debuggable behavior.
@@ -3436,6 +3446,21 @@ async def process_endpoint(
         # re-render path cuts new segments from it, and it ages out with the
         # rest of the job (retention window + OUTPUT_MAX_GB cap) either way.
         cmd.extend(["-u", url, "--keep-original"])
+    elif local_path:
+        # The desktop app handed over a file that is already on this machine:
+        # link it into the job instead of uploading the bytes. Only the app
+        # may do this — the backend is reachable from the user's browser.
+        if not _desktop_token_ok(request):
+            raise HTTPException(
+                status_code=403,
+                detail="A local path is only accepted from the desktop app.")
+        input_path = _link_local_source(local_path, job_id)
+        src_duration = _media_duration_seconds(input_path)
+        if MIN_SOURCE_SECONDS > 0 and 0 < src_duration < MIN_SOURCE_SECONDS:
+            os.remove(input_path)
+            shutil.rmtree(job_output_dir, ignore_errors=True)
+            _reject_short_source(src_duration)
+        cmd.extend(["-i", input_path])
     elif thumb_session:
         # Hardlink (or copy) the session's video under the job's name so source
         # lookup, the clip editor and the preview treat it exactly like a normal
@@ -3693,6 +3718,76 @@ def _locate_source(job_id: str):
 # session and a page reload, short enough that a link leaked through a log, a
 # referer or a shared screenshot is dead by the time anyone tries it.
 SOURCE_URL_TTL_SECONDS = int(os.environ.get("SOURCE_URL_TTL_SECONDS", "21600"))
+
+# Video containers the desktop app may hand over by path. A local file is
+# read straight off the user's disk, so this is a whitelist rather than
+# "whatever ffprobe can open" — a path must not become a way to read an
+# arbitrary file.
+LOCAL_VIDEO_EXTENSIONS = {
+    ".mp4", ".mov", ".m4v", ".mkv", ".webm", ".avi", ".mpg", ".mpeg",
+    ".wmv", ".flv", ".ts", ".m2ts", ".3gp",
+}
+
+
+def _desktop_token_ok(request: Request) -> bool:
+    """True when the request carries the desktop app's token.
+
+    The desktop app may hand the backend a path on the user's disk instead
+    of uploading the bytes. Only the app itself may do that: the backend
+    listens on loopback, and anything running in the user's browser can
+    reach it. The token is generated per launch and never leaves the app.
+
+    Comparing the header also makes the request a non-simple one, so a
+    browser has to preflight it — the backend answers no preflight.
+    """
+    expected = os.environ.get("DW_SHORTS_DESKTOP_TOKEN", "")
+    if not expected:
+        return False
+    given = request.headers.get("X-Desktop-Token", "")
+    return hmac.compare_digest(given, expected)
+
+
+def _link_local_source(local_path: str, job_id: str) -> str:
+    """Put a file the user already has on disk into the job's source slot.
+
+    A hard link, not a copy: the bytes are already on this machine, and
+    copying a multi-gigabyte video to hand it to the pipeline costs time and
+    disk for nothing. The link also keeps the pipeline's in-place edits from
+    touching the user's original — the source-duration cap replaces the
+    file, which swaps our directory entry rather than the shared inode.
+
+    Falls back to a copy when the two are on different filesystems, the same
+    way the thumbnail-session path does it.
+    """
+    src = os.path.abspath(os.path.expanduser(local_path))
+    if not os.path.isfile(src):
+        raise HTTPException(status_code=400, detail="That file no longer exists.")
+    ext = os.path.splitext(src)[1].lower()
+    if ext not in LOCAL_VIDEO_EXTENSIONS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"'{ext or os.path.basename(src)}' is not a video container "
+                   f"the pipeline can read.")
+    size = os.path.getsize(src)
+    if size == 0:
+        raise HTTPException(status_code=400, detail="That file is empty.")
+    if size > MAX_LOCAL_FILE_MB * 1024 * 1024:
+        raise HTTPException(
+            status_code=413,
+            detail=f"That file is {size / 1024**3:.1f} GB; the limit is "
+                   f"{MAX_LOCAL_FILE_MB} MB.")
+    dst = os.path.join(UPLOAD_DIR, f"{job_id}_{os.path.basename(src)}")
+    try:
+        os.link(src, dst)
+    except OSError:
+        # Different filesystem, or a filesystem without links.
+        try:
+            shutil.copyfile(src, dst)
+        except OSError as e:
+            raise HTTPException(
+                status_code=500,
+                detail=f"Could not read that file: {e}") from e
+    return dst
 
 
 def _source_signature(job_id: str, exp: int) -> str:
