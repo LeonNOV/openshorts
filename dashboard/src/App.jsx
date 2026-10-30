@@ -1169,7 +1169,19 @@ function App() {
         });
       } else {
         const formData = new FormData();
-        formData.append('file', data.payload);
+        // In the desktop app the video is already on this machine, so hand the
+        // backend its path instead of pushing the bytes through the loopback
+        // server — a multi-gigabyte file would otherwise be copied for
+        // nothing. A browser has no path to give (and no token), so it
+        // uploads the file as before.
+        const localPath = window.dwFiles?.getPathForFile?.(data.payload) || '';
+        if (localPath) {
+          formData.append('local_path', localPath);
+          const desktopToken = window.dwFiles?.desktopToken;
+          if (desktopToken) headers['X-Desktop-Token'] = desktopToken;
+        } else {
+          formData.append('file', data.payload);
+        }
         formData.append('acknowledged', data.acknowledged ? 'true' : 'false');
         formData.append('output_format', data.outputFormat || 'auto');
         for (const [k, v] of Object.entries(advanced)) {
